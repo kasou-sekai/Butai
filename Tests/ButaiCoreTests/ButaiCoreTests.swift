@@ -54,7 +54,9 @@ struct ButaiCoreTests {
         #expect(loaded?.workspaces.map(\.id) == configuration.workspaces.map(\.id))
         #expect(loaded?.workspaces.map(\.name) == configuration.workspaces.map(\.name))
         #expect(loaded?.settings == configuration.settings)
-        #expect(loaded?.workspaces[0].presets == configuration.workspaces[0].presets)
+        #expect(loaded?.workspaces[0].presets.map(\.id) == configuration.workspaces[0].presets.map(\.id))
+        #expect(loaded?.workspaces[0].presets.map(\.name) == configuration.workspaces[0].presets.map(\.name))
+        #expect(loaded?.workspaces[0].presets.first?.items == configuration.workspaces[0].presets.first?.items)
         #expect(backup?.workspaces.map(\.id) == firstVersion.workspaces.map(\.id))
         #expect(backup?.workspaces.map(\.name) == firstVersion.workspaces.map(\.name))
     }

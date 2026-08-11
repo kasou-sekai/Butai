@@ -13,25 +13,42 @@ final class WindowPresetEngine {
         let applicationPath: String?
         let title: String
         let bounds: CGRect
+        let documentURL: String?
+        let resourcePath: String?
 
         var discovered: DiscoveredWindow {
-            DiscoveredWindow(bundleIdentifier: bundleIdentifier, title: title)
+            DiscoveredWindow(
+                bundleIdentifier: bundleIdentifier,
+                title: title,
+                documentURL: documentURL,
+                resourcePath: resourcePath
+            )
         }
     }
 
     func captureVisibleWindows() -> [PresetItem] {
         discoverVisibleWindows().enumerated().map { index, window in
             let applicationURL = window.applicationPath.map { URL(fileURLWithPath: $0) }
-            let kind = capturedKind(bundleIdentifier: window.bundleIdentifier)
+            let isFinderFolder = window.bundleIdentifier == "com.apple.finder" && window.resourcePath != nil
+            let rules: [WindowMatchRule]
+            if let resourcePath = window.resourcePath {
+                rules = [
+                    WindowMatchRule(kind: .resourcePath, value: resourcePath, weight: 40),
+                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 20)
+                ]
+            } else if window.title.isEmpty {
+                rules = []
+            } else {
+                rules = [WindowMatchRule(kind: .titleExact, value: window.title, weight: 35)]
+            }
             return PresetItem(
-                kind: kind,
+                kind: isFinderFolder ? .finderFolder : .application,
                 applicationBundleIdentifier: window.bundleIdentifier,
                 applicationPath: applicationURL?.path,
+                resourcePath: isFinderFolder ? window.resourcePath : nil,
                 displayName: window.title.isEmpty ? window.applicationName : window.title,
-                openPolicy: .reusePreferred,
-                matchRules: window.title.isEmpty ? [] : [
-                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 35)
-                ],
+                openPolicy: isFinderFolder ? .newWindowRequired : .reusePreferred,
+                matchRules: rules,
                 windowLayout: normalizedLayout(for: window.bounds),
                 sortOrder: index
             )
@@ -83,13 +100,26 @@ final class WindowPresetEngine {
 
             let title = (info[kCGWindowName as String] as? String) ?? ""
             guard !title.isEmpty || bounds.width >= 320 else { return nil }
-            return RuntimeWindow(
+            let baseWindow = RuntimeWindow(
                 pid: ownerPID,
                 bundleIdentifier: bundleIdentifier,
                 applicationName: application.localizedName ?? bundleIdentifier,
                 applicationPath: application.bundleURL?.path,
                 title: title,
-                bounds: bounds
+                bounds: bounds,
+                documentURL: nil,
+                resourcePath: nil
+            )
+            let documentURL = accessibilityDocumentURL(matching: baseWindow)
+            return RuntimeWindow(
+                pid: baseWindow.pid,
+                bundleIdentifier: baseWindow.bundleIdentifier,
+                applicationName: baseWindow.applicationName,
+                applicationPath: baseWindow.applicationPath,
+                title: baseWindow.title,
+                bounds: baseWindow.bounds,
+                documentURL: documentURL,
+                resourcePath: resourcePath(from: documentURL)
             )
         }
     }
@@ -187,7 +217,15 @@ final class WindowPresetEngine {
             } else if !NSWorkspace.shared.open(url) {
                 throw OpenError.openFailed
             }
-        case .file, .folder, .finderFolder:
+        case .finderFolder:
+            guard let path = item.resourcePath else { throw OpenError.missingResource }
+            guard FileManager.default.fileExists(atPath: path) else { throw OpenError.missingResource }
+            if item.openPolicy == .newWindowPreferred || item.openPolicy == .newWindowRequired {
+                try openNewFinderWindow(at: path)
+            } else if !NSWorkspace.shared.open(URL(fileURLWithPath: path)) {
+                throw OpenError.openFailed
+            }
+        case .file, .folder:
             guard let path = item.resourcePath else { throw OpenError.missingResource }
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { throw OpenError.missingResource }
@@ -224,6 +262,24 @@ final class WindowPresetEngine {
         return nil
     }
 
+    private func openNewFinderWindow(at path: String) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = [
+            "-e", "on run argv",
+            "-e", "set targetFolder to POSIX file (item 1 of argv)",
+            "-e", "tell application \"Finder\"",
+            "-e", "make new Finder window to targetFolder",
+            "-e", "activate",
+            "-e", "end tell",
+            "-e", "end run",
+            path
+        ]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw OpenError.openFailed }
+    }
+
     private func restore(window: RuntimeWindow, layout: WindowLayout) -> Bool {
         guard AXIsProcessTrusted(), let element = accessibilityWindow(matching: window) else { return false }
         let target = denormalizedFrame(for: layout.clamped())
@@ -256,6 +312,21 @@ final class WindowPresetEngine {
         return windows.min { lhs, rhs in
             accessibilityDistance(lhs, to: runtime) < accessibilityDistance(rhs, to: runtime)
         }.flatMap { accessibilityDistance($0, to: runtime) < 10_000 ? $0 : nil }
+    }
+
+    private func accessibilityDocumentURL(matching runtime: RuntimeWindow) -> String? {
+        guard AXIsProcessTrusted(),
+              let window = accessibilityWindow(matching: runtime) else { return nil }
+        return copyAttribute(window, kAXDocumentAttribute as CFString)
+    }
+
+    private func resourcePath(from documentURL: String?) -> String? {
+        guard let documentURL, !documentURL.isEmpty else { return nil }
+        if let url = URL(string: documentURL), url.isFileURL {
+            return url.path
+        }
+        if documentURL.hasPrefix("/") { return documentURL }
+        return nil
     }
 
     private func accessibilityDistance(_ element: AXUIElement, to runtime: RuntimeWindow) -> Double {
@@ -317,13 +388,6 @@ final class WindowPresetEngine {
             width: visible.width,
             height: visible.height
         )
-    }
-
-    private func capturedKind(bundleIdentifier: String) -> PresetItem.Kind {
-        // Window-list capture does not expose a reliable document URL. Treat the
-        // captured target as an application window; resource-specific entries can
-        // still be added explicitly in Settings.
-        return .application
     }
 
     private func outcome(

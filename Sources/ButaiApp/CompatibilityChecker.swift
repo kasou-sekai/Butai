@@ -13,8 +13,10 @@ struct CompatibilityCheck: Identifiable {
 }
 
 enum CompatibilityChecker {
+    static var accessibilityIsGranted: Bool { AXIsProcessTrusted() }
+
     static func checks() -> [CompatibilityCheck] {
-        let accessibility = AXIsProcessTrusted()
+        let accessibility = accessibilityIsGranted
         let listen = CGPreflightListenEventAccess()
         let post = CGPreflightPostEventAccess()
         let displayCount = NSScreen.screens.count

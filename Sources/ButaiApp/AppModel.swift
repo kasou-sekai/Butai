@@ -235,6 +235,11 @@ final class AppModel: ObservableObject {
     }
 
     func captureCurrentWindowsAsPreset() {
+        guard CompatibilityChecker.accessibilityIsGranted else {
+            transientMessage = "保存预设需要辅助功能权限，才能读取 Finder 文件夹和窗口信息。"
+            CompatibilityChecker.requestAccessibility()
+            return
+        }
         guard let workspaceIndex = currentWorkspaceIndex else {
             transientMessage = "无法确定当前工作区，未保存预设。"
             return
@@ -287,7 +292,11 @@ final class AppModel: ObservableObject {
                 applicationBundleIdentifier: "com.apple.finder",
                 resourcePath: url.path,
                 displayName: name,
-                matchRules: [WindowMatchRule(kind: .titleExact, value: name, weight: 35)]
+                openPolicy: .newWindowRequired,
+                matchRules: [
+                    WindowMatchRule(kind: .resourcePath, value: url.path, weight: 40),
+                    WindowMatchRule(kind: .titleExact, value: name, weight: 20)
+                ]
             )
         case .file:
             item = PresetItem(kind: .file, resourcePath: url.path, displayName: url.lastPathComponent)
