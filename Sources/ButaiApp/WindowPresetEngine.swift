@@ -6,30 +6,21 @@ import Foundation
 
 @MainActor
 final class WindowPresetEngine {
-    struct RuntimeWindow {
-        let pid: pid_t
-        let bundleIdentifier: String
-        let applicationName: String
-        let applicationPath: String?
-        let title: String
-        let bounds: CGRect
-        let documentURL: String?
-        let resourcePath: String?
+    private let adapterRegistry: AdapterRegistry
 
-        var discovered: DiscoveredWindow {
-            DiscoveredWindow(
-                bundleIdentifier: bundleIdentifier,
-                title: title,
-                documentURL: documentURL,
-                resourcePath: resourcePath
-            )
-        }
+    init(adapterRegistry: AdapterRegistry = AdapterRegistry()) {
+        self.adapterRegistry = adapterRegistry
     }
+
+    var adapterHealth: [AdapterHealth] { adapterRegistry.health }
 
     func captureVisibleWindows() -> [PresetItem] {
         discoverVisibleWindows().enumerated().map { index, window in
+            let layout = normalizedLayout(for: window.bounds)
+            if let adapted = adapterRegistry.capture(window: window, layout: layout, sortOrder: index) {
+                return adapted
+            }
             let applicationURL = window.applicationPath.map { URL(fileURLWithPath: $0) }
-            let isFinderFolder = window.bundleIdentifier == "com.apple.finder" && window.resourcePath != nil
             let rules: [WindowMatchRule]
             if let resourcePath = window.resourcePath {
                 rules = [
@@ -42,14 +33,13 @@ final class WindowPresetEngine {
                 rules = [WindowMatchRule(kind: .titleExact, value: window.title, weight: 35)]
             }
             return PresetItem(
-                kind: isFinderFolder ? .finderFolder : .application,
+                kind: .application,
                 applicationBundleIdentifier: window.bundleIdentifier,
                 applicationPath: applicationURL?.path,
-                resourcePath: isFinderFolder ? window.resourcePath : nil,
                 displayName: window.title.isEmpty ? window.applicationName : window.title,
-                openPolicy: isFinderFolder ? .newWindowRequired : .reusePreferred,
+                openPolicy: .reusePreferred,
                 matchRules: rules,
-                windowLayout: normalizedLayout(for: window.bounds),
+                windowLayout: layout,
                 sortOrder: index
             )
         }
@@ -81,7 +71,7 @@ final class WindowPresetEngine {
         )
     }
 
-    func discoverVisibleWindows() -> [RuntimeWindow] {
+    func discoverVisibleWindows() -> [RuntimeWindowSnapshot] {
         let options: CGWindowListOption = [.optionOnScreenOnly, .excludeDesktopElements]
         guard let raw = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
@@ -100,7 +90,7 @@ final class WindowPresetEngine {
 
             let title = (info[kCGWindowName as String] as? String) ?? ""
             guard !title.isEmpty || bounds.width >= 320 else { return nil }
-            let baseWindow = RuntimeWindow(
+            let baseWindow = RuntimeWindowSnapshot(
                 pid: ownerPID,
                 bundleIdentifier: bundleIdentifier,
                 applicationName: application.localizedName ?? bundleIdentifier,
@@ -111,7 +101,7 @@ final class WindowPresetEngine {
                 resourcePath: nil
             )
             let documentURL = accessibilityDocumentURL(matching: baseWindow)
-            return RuntimeWindow(
+            return RuntimeWindowSnapshot(
                 pid: baseWindow.pid,
                 bundleIdentifier: baseWindow.bundleIdentifier,
                 applicationName: baseWindow.applicationName,
@@ -139,7 +129,18 @@ final class WindowPresetEngine {
         }
 
         do {
-            try open(item: item)
+            try await open(item: item)
+        } catch let error as AdapterOpenError {
+            switch error {
+            case .applicationNotFound:
+                return outcome(item, .applicationNotFound, error.localizedDescription)
+            case .missingResource, .resourceUnavailable:
+                return outcome(item, .resourceUnavailable, error.localizedDescription)
+            case .unsupported:
+                return outcome(item, .windowOperationUnsupported, error.localizedDescription)
+            case .launchFailed:
+                return outcome(item, .openFailed, error.localizedDescription)
+            }
         } catch OpenError.applicationNotFound {
             return outcome(item, .applicationNotFound, "找不到目标应用")
         } catch OpenError.unsupported {
@@ -169,16 +170,19 @@ final class WindowPresetEngine {
             }
         } while Date() < deadline && !Task.isCancelled
 
+        if Task.isCancelled {
+            return outcome(item, .cancelled, "任务已取消")
+        }
         return outcome(item, .windowTimeout, "已发出打开请求，但未在限定时间内匹配到窗口")
     }
 
     private func bestMatch(
         for item: PresetItem,
-        in windows: [RuntimeWindow]
-    ) -> (window: RuntimeWindow, match: WindowMatch)? {
-        windows
+        in windows: [RuntimeWindowSnapshot]
+    ) -> (window: RuntimeWindowSnapshot, match: WindowMatch)? {
+        return windows
             .map { ($0, WindowMatcher.match(item: item, window: $0.discovered)) }
-            .filter { $0.1.bundleIdentifierMatched && $0.1.score >= 50 }
+            .filter { WindowMatcher.isAcceptable(item: item, match: $0.1) }
             .max { $0.1.score < $1.1.score }
     }
 
@@ -198,11 +202,15 @@ final class WindowPresetEngine {
         }
     }
 
-    private func open(item: PresetItem) throws {
+    private func open(item: PresetItem) async throws {
+        if let adapter = adapterRegistry.adapter(for: item) {
+            try await adapter.open(item: item)
+            return
+        }
         switch item.kind {
         case .command:
             throw OpenError.unsupported
-        case .url, .edgeWindow:
+        case .url:
             guard let value = item.resourcePath, let url = URL(string: value) else {
                 throw OpenError.missingResource
             }
@@ -217,29 +225,11 @@ final class WindowPresetEngine {
             } else if !NSWorkspace.shared.open(url) {
                 throw OpenError.openFailed
             }
-        case .finderFolder:
-            guard let path = item.resourcePath else { throw OpenError.missingResource }
-            guard FileManager.default.fileExists(atPath: path) else { throw OpenError.missingResource }
-            if item.openPolicy == .newWindowPreferred || item.openPolicy == .newWindowRequired {
-                try openNewFinderWindow(at: path)
-            } else if !NSWorkspace.shared.open(URL(fileURLWithPath: path)) {
-                throw OpenError.openFailed
-            }
         case .file, .folder:
             guard let path = item.resourcePath else { throw OpenError.missingResource }
             let url = URL(fileURLWithPath: path)
             guard FileManager.default.fileExists(atPath: path) else { throw OpenError.missingResource }
             if !NSWorkspace.shared.open(url) { throw OpenError.openFailed }
-        case .vscodeFolder, .vscodeWorkspace:
-            guard let path = item.resourcePath else { throw OpenError.missingResource }
-            guard let applicationURL = applicationURL(for: item) ??
-                    NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.microsoft.VSCode") else {
-                throw OpenError.applicationNotFound
-            }
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-            process.arguments = ["-na", applicationURL.path, "--args", "--new-window", path]
-            try process.run()
         case .application:
             guard let applicationURL = applicationURL(for: item) else {
                 throw OpenError.applicationNotFound
@@ -249,6 +239,8 @@ final class WindowPresetEngine {
                 configuration: NSWorkspace.OpenConfiguration(),
                 completionHandler: nil
             )
+        case .finderFolder, .vscodeFolder, .vscodeWorkspace, .edgeWindow, .chatGPTWindow:
+            throw OpenError.unsupported
         }
     }
 
@@ -262,25 +254,7 @@ final class WindowPresetEngine {
         return nil
     }
 
-    private func openNewFinderWindow(at path: String) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-        process.arguments = [
-            "-e", "on run argv",
-            "-e", "set targetFolder to POSIX file (item 1 of argv)",
-            "-e", "tell application \"Finder\"",
-            "-e", "make new Finder window to targetFolder",
-            "-e", "activate",
-            "-e", "end tell",
-            "-e", "end run",
-            path
-        ]
-        try process.run()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { throw OpenError.openFailed }
-    }
-
-    private func restore(window: RuntimeWindow, layout: WindowLayout) -> Bool {
+    private func restore(window: RuntimeWindowSnapshot, layout: WindowLayout) -> Bool {
         guard AXIsProcessTrusted(), let element = accessibilityWindow(matching: window) else { return false }
         let target = denormalizedFrame(for: layout.clamped())
         var position = target.origin
@@ -299,7 +273,7 @@ final class WindowPresetEngine {
         return positionResult == .success && sizeResult == .success
     }
 
-    private func accessibilityWindow(matching runtime: RuntimeWindow) -> AXUIElement? {
+    private func accessibilityWindow(matching runtime: RuntimeWindowSnapshot) -> AXUIElement? {
         let application = AXUIElementCreateApplication(runtime.pid)
         var rawWindows: CFTypeRef?
         guard AXUIElementCopyAttributeValue(
@@ -314,10 +288,52 @@ final class WindowPresetEngine {
         }.flatMap { accessibilityDistance($0, to: runtime) < 10_000 ? $0 : nil }
     }
 
-    private func accessibilityDocumentURL(matching runtime: RuntimeWindow) -> String? {
+    private func accessibilityDocumentURL(matching runtime: RuntimeWindowSnapshot) -> String? {
         guard AXIsProcessTrusted(),
               let window = accessibilityWindow(matching: runtime) else { return nil }
-        return copyAttribute(window, kAXDocumentAttribute as CFString)
+        if let direct = stringAttribute(window, kAXDocumentAttribute as CFString) {
+            return direct
+        }
+        if runtime.bundleIdentifier == "com.microsoft.edgemac" {
+            return descendantStringAttribute(
+                window,
+                attribute: kAXURLAttribute as CFString,
+                maximumDepth: 7,
+                remainingNodes: 180
+            )
+        }
+        return nil
+    }
+
+    private func stringAttribute(_ element: AXUIElement, _ attribute: CFString) -> String? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+              let value else { return nil }
+        if let string = value as? String { return string }
+        if let url = value as? URL { return url.absoluteString }
+        return nil
+    }
+
+    private func descendantStringAttribute(
+        _ element: AXUIElement,
+        attribute: CFString,
+        maximumDepth: Int,
+        remainingNodes: Int
+    ) -> String? {
+        guard maximumDepth >= 0, remainingNodes > 0 else { return nil }
+        var queue: [(AXUIElement, Int)] = [(element, 0)]
+        var visited = 0
+        while !queue.isEmpty && visited < remainingNodes {
+            let (current, depth) = queue.removeFirst()
+            visited += 1
+            if let value = stringAttribute(current, attribute), !value.isEmpty { return value }
+            guard depth < maximumDepth,
+                  let children: [AXUIElement] = copyAttribute(current, kAXChildrenAttribute as CFString) else {
+                continue
+            }
+            queue.append(contentsOf: children.map { ($0, depth + 1) })
+        }
+        return nil
     }
 
     private func resourcePath(from documentURL: String?) -> String? {
@@ -329,7 +345,7 @@ final class WindowPresetEngine {
         return nil
     }
 
-    private func accessibilityDistance(_ element: AXUIElement, to runtime: RuntimeWindow) -> Double {
+    private func accessibilityDistance(_ element: AXUIElement, to runtime: RuntimeWindowSnapshot) -> Double {
         let title: String = copyAttribute(element, kAXTitleAttribute as CFString) ?? ""
         let titlePenalty = title == runtime.title ? 0.0 : 5_000.0
         guard let frame = accessibilityFrame(element) else { return titlePenalty + 20_000 }

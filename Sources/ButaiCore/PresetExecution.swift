@@ -8,8 +8,11 @@ public struct PresetItemOutcome: Identifiable, Equatable, Sendable {
         case skipped
         case permissionDenied
         case applicationNotFound
+        case resourceUnavailable
         case openFailed
         case windowTimeout
+        case windowOperationUnsupported
+        case cancelled
         case lowConfidence
         case unsupported
         case unknownError
@@ -77,4 +80,3 @@ public struct PresetExecutionReport: Equatable, Sendable {
         return "\(presetName)\(action)：\(successCount) 成功，\(issueCount) 需要处理"
     }
 }
-

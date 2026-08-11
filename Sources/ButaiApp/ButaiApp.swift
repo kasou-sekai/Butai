@@ -16,6 +16,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         spaceObserver = SpaceObserver { [weak model = model] in model?.spaceDidChange() }
         overlayController?.show()
 
+        if !CompatibilityChecker.accessibilityIsGranted {
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700))
+                CompatibilityChecker.requestAccessibility()
+            }
+        }
+
         setupCancellable = model.$needsInitialSetup
             .removeDuplicates()
             .filter { $0 }

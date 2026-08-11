@@ -100,7 +100,7 @@ public struct Preset: Identifiable, Codable, Equatable, Sendable {
 public struct PresetItem: Identifiable, Codable, Equatable, Sendable {
     public enum Kind: String, Codable, CaseIterable, Sendable {
         case application, file, folder, url, vscodeFolder, vscodeWorkspace
-        case finderFolder, edgeWindow, command
+        case finderFolder, edgeWindow, chatGPTWindow, command
     }
 
     public enum OpenPolicy: String, Codable, CaseIterable, Sendable {
@@ -112,6 +112,8 @@ public struct PresetItem: Identifiable, Codable, Equatable, Sendable {
     public var applicationBundleIdentifier: String?
     public var applicationPath: String?
     public var resourcePath: String?
+    public var additionalResourcePaths: [String]?
+    public var profileIdentifier: String?
     public var displayName: String
     public var openPolicy: OpenPolicy
     public var matchRules: [WindowMatchRule]
@@ -126,6 +128,8 @@ public struct PresetItem: Identifiable, Codable, Equatable, Sendable {
         applicationBundleIdentifier: String? = nil,
         applicationPath: String? = nil,
         resourcePath: String? = nil,
+        additionalResourcePaths: [String]? = nil,
+        profileIdentifier: String? = nil,
         displayName: String,
         openPolicy: OpenPolicy = .reusePreferred,
         matchRules: [WindowMatchRule] = [],
@@ -139,6 +143,8 @@ public struct PresetItem: Identifiable, Codable, Equatable, Sendable {
         self.applicationBundleIdentifier = applicationBundleIdentifier
         self.applicationPath = applicationPath
         self.resourcePath = resourcePath
+        self.additionalResourcePaths = additionalResourcePaths
+        self.profileIdentifier = profileIdentifier
         self.displayName = displayName
         self.openPolicy = openPolicy
         self.matchRules = matchRules

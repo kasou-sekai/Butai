@@ -78,6 +78,8 @@ private struct PresetSettingsView: View {
     @State private var selectedWorkspaceID: UUID?
     @State private var importKind: ImportKind?
     @State private var urlText = ""
+    @State private var edgeURLsText = ""
+    @State private var edgeProfile = ""
     @State private var confirmCapture = false
 
     private var workspaceID: UUID? {
@@ -207,6 +209,38 @@ private struct PresetSettingsView: View {
                     }
                     .disabled(workspaceID == nil || urlText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+
+                GroupBox("应用适配器") {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack {
+                            TextField("Edge URL；多个 URL 可换行或用逗号分隔", text: $edgeURLsText)
+                            TextField("Profile（可选，如 Default）", text: $edgeProfile)
+                                .frame(maxWidth: 190)
+                            Button("添加 Edge 窗口") {
+                                guard let workspaceID else { return }
+                                model.addEdgeWindow(
+                                    workspaceID: workspaceID,
+                                    urlsText: edgeURLsText,
+                                    profile: edgeProfile
+                                )
+                                edgeURLsText = ""
+                                edgeProfile = ""
+                            }
+                            .disabled(workspaceID == nil || edgeURLsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        HStack {
+                            Text("Finder 和 VS Code 使用上方“添加项目”；Edge 支持新窗口、多 URL 和 Profile。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Spacer()
+                            Button("添加 ChatGPT（实验性）") {
+                                guard let workspaceID else { return }
+                                model.addChatGPTWindow(workspaceID: workspaceID)
+                            }
+                            .disabled(workspaceID == nil)
+                        }
+                    }
+                }
             }
 
             if let report = model.lastPresetReport {
@@ -279,6 +313,7 @@ private struct PresetSettingsView: View {
         case .folder, .finderFolder: "folder"
         case .url, .edgeWindow: "link"
         case .vscodeFolder, .vscodeWorkspace: "chevron.left.forwardslash.chevron.right"
+        case .chatGPTWindow: "bubble.left.and.bubble.right"
         case .command: "terminal"
         }
     }
@@ -416,6 +451,7 @@ private struct OverlaySettingsView: View {
 }
 
 private struct PermissionsView: View {
+    @EnvironmentObject private var model: AppModel
     @State private var checks = CompatibilityChecker.checks()
 
     var body: some View {
@@ -437,6 +473,19 @@ private struct PermissionsView: View {
                     }
                 }
             }
+            Section("应用适配器") {
+                ForEach(model.adapterHealth) { adapter in
+                    HStack(alignment: .top) {
+                        Image(systemName: adapterSymbol(adapter.state))
+                            .foregroundStyle(adapterColor(adapter.state))
+                            .frame(width: 22)
+                        VStack(alignment: .leading) {
+                            Text(adapter.name).fontWeight(.medium)
+                            Text(adapter.detail).font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             HStack {
                 Button("请求辅助功能权限") { CompatibilityChecker.requestAccessibility() }
                 Button("请求输入监听权限") { CompatibilityChecker.requestInputMonitoring() }
@@ -454,6 +503,22 @@ private struct PermissionsView: View {
 
     private func color(for state: CompatibilityCheck.State) -> Color {
         switch state { case .pass: .green; case .warning: .yellow; case .failure: .red }
+    }
+
+    private func adapterSymbol(_ state: AdapterHealth.State) -> String {
+        switch state {
+        case .ready: "checkmark.circle.fill"
+        case .degraded, .experimental: "exclamationmark.triangle.fill"
+        case .unavailable: "xmark.circle.fill"
+        }
+    }
+
+    private func adapterColor(_ state: AdapterHealth.State) -> Color {
+        switch state {
+        case .ready: .green
+        case .degraded, .experimental: .yellow
+        case .unavailable: .red
+        }
     }
 }
 

@@ -33,6 +33,14 @@ public struct WindowMatch: Equatable, Sendable {
 }
 
 public enum WindowMatcher {
+    public static func minimumAcceptedScore(for item: PresetItem) -> Int {
+        item.matchRules.isEmpty && item.resourcePath == nil ? 50 : 75
+    }
+
+    public static func isAcceptable(item: PresetItem, match: WindowMatch) -> Bool {
+        match.bundleIdentifierMatched && match.score >= minimumAcceptedScore(for: item)
+    }
+
     public static func match(item: PresetItem, window: DiscoveredWindow) -> WindowMatch {
         var score = 0
         let bundleMatched = item.applicationBundleIdentifier == nil ||

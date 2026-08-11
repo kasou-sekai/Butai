@@ -49,6 +49,8 @@ final class AppModel: ObservableObject {
 
     var currentPreset: Preset? { currentWorkspace?.presets.first }
 
+    var adapterHealth: [AdapterHealth] { presetEngine.adapterHealth }
+
     func preset(for workspaceID: UUID) -> Preset? {
         workspaces.first(where: { $0.id == workspaceID })?.presets.first
     }
@@ -301,9 +303,11 @@ final class AppModel: ObservableObject {
         case .file:
             item = PresetItem(kind: .file, resourcePath: url.path, displayName: url.lastPathComponent)
         case .vscodeFolder, .vscodeWorkspace:
+            let vscode = preferredVSCodeApplication()
             item = PresetItem(
                 kind: kind,
-                applicationBundleIdentifier: "com.microsoft.VSCode",
+                applicationBundleIdentifier: vscode?.bundleIdentifier ?? "com.microsoft.VSCode",
+                applicationPath: vscode?.url.path,
                 resourcePath: url.path,
                 displayName: url.lastPathComponent,
                 openPolicy: .newWindowPreferred,
@@ -315,6 +319,22 @@ final class AppModel: ObservableObject {
         appendPresetItem(item, workspaceIndex: workspaceIndex)
     }
 
+    private func preferredVSCodeApplication() -> (bundleIdentifier: String, url: URL)? {
+        let candidates = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.vscodium"]
+        if let running = NSWorkspace.shared.runningApplications.first(where: {
+            guard let identifier = $0.bundleIdentifier else { return false }
+            return candidates.contains(identifier) && $0.bundleURL != nil
+        }), let identifier = running.bundleIdentifier, let url = running.bundleURL {
+            return (identifier, url)
+        }
+        for identifier in candidates {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+                return (identifier, url)
+            }
+        }
+        return nil
+    }
+
     func addPresetURL(workspaceID: UUID, value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: trimmed), let scheme = url.scheme, ["http", "https"].contains(scheme) else {
@@ -322,6 +342,46 @@ final class AppModel: ObservableObject {
             return
         }
         addPresetResource(workspaceID: workspaceID, kind: .url, url: url)
+    }
+
+    func addEdgeWindow(workspaceID: UUID, urlsText: String, profile: String) {
+        let values = urlsText
+            .split(whereSeparator: { $0.isNewline || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { value in
+                guard let url = URL(string: value), let scheme = url.scheme?.lowercased() else { return false }
+                return scheme == "http" || scheme == "https"
+            }
+        guard let first = values.first else {
+            transientMessage = "请至少输入一个有效的 http 或 https URL。"
+            return
+        }
+        let trimmedProfile = profile.trimmingCharacters(in: .whitespacesAndNewlines)
+        let item = PresetItem(
+            kind: .edgeWindow,
+            applicationBundleIdentifier: "com.microsoft.edgemac",
+            resourcePath: first,
+            additionalResourcePaths: Array(values.dropFirst()),
+            profileIdentifier: trimmedProfile.isEmpty ? nil : trimmedProfile,
+            displayName: URL(string: first)?.host ?? "Edge 窗口",
+            openPolicy: .newWindowRequired,
+            matchRules: [WindowMatchRule(kind: .documentURL, value: first, weight: 45)]
+        )
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        appendPresetItem(item, workspaceIndex: workspaceIndex)
+    }
+
+    func addChatGPTWindow(workspaceID: UUID) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        appendPresetItem(
+            PresetItem(
+                kind: .chatGPTWindow,
+                applicationBundleIdentifier: "com.openai.chat",
+                displayName: "ChatGPT",
+                openPolicy: .reusePreferred
+            ),
+            workspaceIndex: workspaceIndex
+        )
     }
 
     func setPresetItemEnabled(workspaceID: UUID, itemID: UUID, enabled: Bool) {

@@ -37,6 +37,15 @@ struct ButaiCoreTests {
                             normalizedWidth: 0.5,
                             normalizedHeight: 0.6
                         )
+                    ),
+                    PresetItem(
+                        kind: .edgeWindow,
+                        applicationBundleIdentifier: "com.microsoft.edgemac",
+                        resourcePath: "https://example.com",
+                        additionalResourcePaths: ["https://example.org"],
+                        profileIdentifier: "Profile 1",
+                        displayName: "Research",
+                        openPolicy: .newWindowRequired
                     )
                 ]
             )
@@ -130,6 +139,39 @@ struct ButaiCoreTests {
 
         #expect(WindowMatcher.match(item: item, window: correct).confidence == .high)
         #expect(WindowMatcher.match(item: item, window: other).confidence == .medium)
+        #expect(WindowMatcher.isAcceptable(item: item, match: WindowMatcher.match(item: item, window: correct)))
+        #expect(!WindowMatcher.isAcceptable(item: item, match: WindowMatcher.match(item: item, window: other)))
+    }
+
+    @Test("Generic applications may reuse bundle matches while resource items may not")
+    func resourceMatchingThreshold() {
+        let generic = PresetItem(
+            kind: .application,
+            applicationBundleIdentifier: "com.example.Editor",
+            displayName: "Editor"
+        )
+        let folder = PresetItem(
+            kind: .finderFolder,
+            applicationBundleIdentifier: "com.apple.finder",
+            resourcePath: "/tmp/Target",
+            displayName: "Target",
+            matchRules: [WindowMatchRule(kind: .resourcePath, value: "/tmp/Target", weight: 45)]
+        )
+        let genericWindow = DiscoveredWindow(bundleIdentifier: "com.example.Editor", title: "Anything")
+        let wrongFolder = DiscoveredWindow(
+            bundleIdentifier: "com.apple.finder",
+            title: "Other",
+            resourcePath: "/tmp/Other"
+        )
+
+        #expect(WindowMatcher.isAcceptable(
+            item: generic,
+            match: WindowMatcher.match(item: generic, window: genericWindow)
+        ))
+        #expect(!WindowMatcher.isAcceptable(
+            item: folder,
+            match: WindowMatcher.match(item: folder, window: wrongFolder)
+        ))
     }
 
     @Test("Navigation intent validates bounds")
