@@ -22,6 +22,25 @@ struct ButaiCoreTests {
         let url = directory.appendingPathComponent("configuration.json")
         let repository = ConfigurationRepository(configurationURL: url)
         var configuration = ButaiConfiguration.initial(workspaceCount: 3)
+        configuration.workspaces[0].presets = [
+            Preset(
+                workspaceID: configuration.workspaces[0].id,
+                name: "开发预设",
+                items: [
+                    PresetItem(
+                        kind: .application,
+                        applicationBundleIdentifier: "com.apple.TextEdit",
+                        displayName: "TextEdit",
+                        windowLayout: WindowLayout(
+                            normalizedX: 0.1,
+                            normalizedY: 0.2,
+                            normalizedWidth: 0.5,
+                            normalizedHeight: 0.6
+                        )
+                    )
+                ]
+            )
+        ]
 
         try await repository.save(configuration)
         let firstVersion = configuration
@@ -35,8 +54,40 @@ struct ButaiCoreTests {
         #expect(loaded?.workspaces.map(\.id) == configuration.workspaces.map(\.id))
         #expect(loaded?.workspaces.map(\.name) == configuration.workspaces.map(\.name))
         #expect(loaded?.settings == configuration.settings)
+        #expect(loaded?.workspaces[0].presets == configuration.workspaces[0].presets)
         #expect(backup?.workspaces.map(\.id) == firstVersion.workspaces.map(\.id))
         #expect(backup?.workspaces.map(\.name) == firstVersion.workspaces.map(\.name))
+    }
+
+    @Test("Preset execution report counts successes and issues")
+    func presetExecutionReport() {
+        let presetID = UUID()
+        let outcomes = [
+            PresetItemOutcome(
+                itemID: UUID(),
+                displayName: "Ready",
+                status: .ready,
+                message: "已有窗口"
+            ),
+            PresetItemOutcome(
+                itemID: UUID(),
+                displayName: "Missing",
+                status: .applicationNotFound,
+                message: "找不到应用"
+            )
+        ]
+        let report = PresetExecutionReport(
+            presetID: presetID,
+            presetName: "开发预设",
+            mode: .complete,
+            outcomes: outcomes,
+            startedAt: .distantPast,
+            finishedAt: .now
+        )
+
+        #expect(report.successCount == 1)
+        #expect(report.issueCount == 1)
+        #expect(report.summary == "开发预设已补全：1 成功，1 需要处理")
     }
 
     @Test("Layout remains inside visible normalized bounds")

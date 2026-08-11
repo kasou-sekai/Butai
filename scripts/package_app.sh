@@ -7,7 +7,7 @@ DEVELOPER_ROOT="${DEVELOPER_DIR:-/Volumes/Data/Applications/Xcode-beta.app/Conte
 BUILD_ROOT="${BUTAI_BUILD_ROOT:-/private/tmp/ButaiReleaseBuild}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_PATH="${DIST_DIR}/Butai.app"
-ZIP_PATH="${DIST_DIR}/Butai-0.2.6-macOS.zip"
+ZIP_PATH="${DIST_DIR}/Butai-0.3.0-macOS.zip"
 ARCHIVE_DIR="${DIST_DIR}/archive"
 
 if [[ -e "${ZIP_PATH}" ]]; then

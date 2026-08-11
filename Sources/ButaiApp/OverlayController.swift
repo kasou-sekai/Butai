@@ -177,8 +177,17 @@ private struct OverlayView: View {
                         .foregroundStyle(.yellow)
                 }
                 Spacer()
-                Button("补全预设") { model.showPrototypeMessage("补全预设") }
-                Button("恢复布局") { model.showPrototypeMessage("恢复布局") }
+                if model.isPresetRunning {
+                    ProgressView().controlSize(.small)
+                }
+                Button("补全预设") {
+                    Task { await model.completeCurrentPreset() }
+                }
+                .disabled(model.currentPreset == nil || model.isPresetRunning)
+                Button("恢复布局") {
+                    Task { await model.restoreCurrentLayout() }
+                }
+                .disabled(model.currentPreset == nil || model.isPresetRunning)
             }
             .font(.caption)
         }

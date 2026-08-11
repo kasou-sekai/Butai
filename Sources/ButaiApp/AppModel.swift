@@ -13,19 +13,24 @@ final class AppModel: ObservableObject {
     @Published private(set) var needsInitialSetup = false
     @Published private(set) var spaceDetectionAvailable = false
     @Published private(set) var detectedSystemSpaceCount: Int?
+    @Published private(set) var isPresetRunning = false
+    @Published private(set) var lastPresetReport: PresetExecutionReport?
 
     let repository: ConfigurationRepository
     let navigator: any SpaceNavigating
     private let spaceProvider: any SystemSpaceProviding
+    private let presetEngine: WindowPresetEngine
 
     init(
         repository: ConfigurationRepository = .defaultRepository(),
         spaceProvider: any SystemSpaceProviding = CGSSystemSpaceProvider(),
-        navigator: (any SpaceNavigating)? = nil
+        navigator: (any SpaceNavigating)? = nil,
+        presetEngine: WindowPresetEngine = WindowPresetEngine()
     ) {
         self.repository = repository
         self.spaceProvider = spaceProvider
         self.navigator = navigator ?? PrivateSpaceNavigator(provider: spaceProvider)
+        self.presetEngine = presetEngine
         Task { await load() }
     }
 
@@ -41,6 +46,12 @@ final class AppModel: ObservableObject {
     }
 
     var displayWorkspace: Workspace? { currentWorkspace ?? workspaces.first }
+
+    var currentPreset: Preset? { currentWorkspace?.presets.first }
+
+    func preset(for workspaceID: UUID) -> Preset? {
+        workspaces.first(where: { $0.id == workspaceID })?.presets.first
+    }
 
     private static let setupCompletionKey = "ButaiInitialSetupCompleteV2"
 
@@ -223,13 +234,153 @@ final class AppModel: ObservableObject {
         setOverlayOffsets(horizontal: 0, vertical: 0)
     }
 
-    func showPrototypeMessage(_ action: String) {
-        transientMessage = "“\(action)”将在预设执行阶段接入；当前首版已保留安全执行边界。"
+    func captureCurrentWindowsAsPreset() {
+        guard let workspaceIndex = currentWorkspaceIndex else {
+            transientMessage = "无法确定当前工作区，未保存预设。"
+            return
+        }
+        let items = presetEngine.captureVisibleWindows()
+        guard !items.isEmpty else {
+            transientMessage = "当前桌面没有可保存的普通窗口。"
+            return
+        }
+
+        let workspace = configuration.workspaces[workspaceIndex]
+        let now = Date()
+        if configuration.workspaces[workspaceIndex].presets.isEmpty {
+            configuration.workspaces[workspaceIndex].presets = [
+                Preset(
+                    workspaceID: workspace.id,
+                    name: "\(workspace.name)预设",
+                    items: items,
+                    updatedAt: now
+                )
+            ]
+        } else {
+            configuration.workspaces[workspaceIndex].presets[0].items = items
+            configuration.workspaces[workspaceIndex].presets[0].updatedAt = now
+        }
+        configuration.workspaces[workspaceIndex].updatedAt = now
+        lastPresetReport = nil
+        transientMessage = "已从当前桌面保存 \(items.count) 个窗口到“\(workspace.name)”预设。"
+        persist()
+    }
+
+    func addPresetResource(workspaceID: UUID, kind: PresetItem.Kind, url: URL) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        var item: PresetItem
+        switch kind {
+        case .application:
+            let bundle = Bundle(url: url)
+            item = PresetItem(
+                kind: .application,
+                applicationBundleIdentifier: bundle?.bundleIdentifier,
+                applicationPath: url.path,
+                displayName: bundle?.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String
+                    ?? bundle?.object(forInfoDictionaryKey: "CFBundleName") as? String
+                    ?? url.deletingPathExtension().lastPathComponent
+            )
+        case .folder, .finderFolder:
+            let name = url.lastPathComponent
+            item = PresetItem(
+                kind: .finderFolder,
+                applicationBundleIdentifier: "com.apple.finder",
+                resourcePath: url.path,
+                displayName: name,
+                matchRules: [WindowMatchRule(kind: .titleExact, value: name, weight: 35)]
+            )
+        case .file:
+            item = PresetItem(kind: .file, resourcePath: url.path, displayName: url.lastPathComponent)
+        case .vscodeFolder, .vscodeWorkspace:
+            item = PresetItem(
+                kind: kind,
+                applicationBundleIdentifier: "com.microsoft.VSCode",
+                resourcePath: url.path,
+                displayName: url.lastPathComponent,
+                openPolicy: .newWindowPreferred,
+                matchRules: [WindowMatchRule(kind: .titlePrefix, value: url.deletingPathExtension().lastPathComponent, weight: 35)]
+            )
+        default:
+            item = PresetItem(kind: kind, resourcePath: url.absoluteString, displayName: url.absoluteString)
+        }
+        appendPresetItem(item, workspaceIndex: workspaceIndex)
+    }
+
+    func addPresetURL(workspaceID: UUID, value: String) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: trimmed), let scheme = url.scheme, ["http", "https"].contains(scheme) else {
+            transientMessage = "请输入有效的 http 或 https URL。"
+            return
+        }
+        addPresetResource(workspaceID: workspaceID, kind: .url, url: url)
+    }
+
+    func setPresetItemEnabled(workspaceID: UUID, itemID: UUID, enabled: Bool) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              !configuration.workspaces[workspaceIndex].presets.isEmpty,
+              let itemIndex = configuration.workspaces[workspaceIndex].presets[0].items
+                .firstIndex(where: { $0.id == itemID }) else { return }
+        configuration.workspaces[workspaceIndex].presets[0].items[itemIndex].enabled = enabled
+        configuration.workspaces[workspaceIndex].presets[0].updatedAt = .now
+        persist()
+    }
+
+    func deletePresetItems(workspaceID: UUID, at offsets: IndexSet) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              !configuration.workspaces[workspaceIndex].presets.isEmpty else { return }
+        configuration.workspaces[workspaceIndex].presets[0].items.remove(atOffsets: offsets)
+        for index in configuration.workspaces[workspaceIndex].presets[0].items.indices {
+            configuration.workspaces[workspaceIndex].presets[0].items[index].sortOrder = index
+        }
+        configuration.workspaces[workspaceIndex].presets[0].updatedAt = .now
+        persist()
+    }
+
+    func completeCurrentPreset() async {
+        await executeCurrentPreset(mode: .complete)
+    }
+
+    func restoreCurrentLayout() async {
+        await executeCurrentPreset(mode: .restore)
     }
 
     private func markMappingUncertain(message: String) {
         configuration.calibration.reliability = .uncertain
         transientMessage = message
+    }
+
+    private var currentWorkspaceIndex: Int? {
+        guard let id = configuration.calibration.currentWorkspaceID else { return nil }
+        return configuration.workspaces.firstIndex { $0.id == id }
+    }
+
+    private func appendPresetItem(_ item: PresetItem, workspaceIndex: Int) {
+        let workspace = configuration.workspaces[workspaceIndex]
+        if configuration.workspaces[workspaceIndex].presets.isEmpty {
+            configuration.workspaces[workspaceIndex].presets = [
+                Preset(workspaceID: workspace.id, name: "\(workspace.name)预设")
+            ]
+        }
+        var item = item
+        item.sortOrder = configuration.workspaces[workspaceIndex].presets[0].items.count
+        configuration.workspaces[workspaceIndex].presets[0].items.append(item)
+        configuration.workspaces[workspaceIndex].presets[0].updatedAt = .now
+        transientMessage = "已将“\(item.displayName)”加入 \(workspace.name) 预设。"
+        persist()
+    }
+
+    private func executeCurrentPreset(mode: PresetExecutionReport.Mode) async {
+        guard !isPresetRunning else { return }
+        guard let preset = currentPreset else {
+            transientMessage = "当前工作区还没有预设。请先保存当前窗口或添加项目。"
+            return
+        }
+        isPresetRunning = true
+        transientMessage = mode == .restore ? "正在补全项目并恢复布局…" : "正在补全预设…"
+        let report = await presetEngine.execute(preset: preset, mode: mode)
+        lastPresetReport = report
+        isPresetRunning = false
+        transientMessage = report.summary
     }
 
     @discardableResult

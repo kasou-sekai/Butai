@@ -1,10 +1,12 @@
 import AppKit
 import ButaiCore
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case workspaces = "工作区"
+        case presets = "预设与窗口"
         case overlay = "浮窗"
         case permissions = "权限与诊断"
         case about = "关于"
@@ -48,6 +50,7 @@ struct SettingsView: View {
             } detail: {
                 switch selection ?? .workspaces {
                 case .workspaces: WorkspaceSettingsView()
+                case .presets: PresetSettingsView()
                 case .overlay: OverlaySettingsView()
                 case .permissions: PermissionsView()
                 case .about: AboutView()
@@ -60,10 +63,228 @@ struct SettingsView: View {
     private func icon(for section: Section) -> String {
         switch section {
         case .workspaces: "rectangle.3.group"
+        case .presets: "macwindow.on.rectangle"
         case .overlay: "menubar.rectangle"
         case .permissions: "checkmark.shield"
         case .about: "info.circle"
         }
+    }
+}
+
+private struct PresetSettingsView: View {
+    private enum ImportKind { case application, file, folder, vscodeFolder, vscodeWorkspace }
+
+    @EnvironmentObject private var model: AppModel
+    @State private var selectedWorkspaceID: UUID?
+    @State private var importKind: ImportKind?
+    @State private var urlText = ""
+    @State private var confirmCapture = false
+
+    private var workspaceID: UUID? {
+        selectedWorkspaceID ?? model.currentWorkspace?.id ?? model.workspaces.first?.id
+    }
+
+    private var workspace: Workspace? {
+        guard let workspaceID else { return nil }
+        return model.workspaces.first { $0.id == workspaceID }
+    }
+
+    private var preset: Preset? {
+        guard let workspaceID else { return nil }
+        return model.preset(for: workspaceID)
+    }
+
+    private var isCurrentWorkspace: Bool {
+        workspaceID == model.currentWorkspace?.id
+    }
+
+    var body: some View {
+        Form {
+            Section("目标工作区") {
+                Picker("工作区", selection: Binding(
+                    get: { workspaceID },
+                    set: { selectedWorkspaceID = $0 }
+                )) {
+                    ForEach(model.workspaces) { workspace in
+                        Text("\(workspace.order). \(workspace.name)").tag(Optional(workspace.id))
+                    }
+                }
+                .pickerStyle(.menu)
+
+                if !isCurrentWorkspace {
+                    Label("补全和恢复只能对当前所在工作区执行。", systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            Section("保存与执行") {
+                HStack {
+                    Button("从当前窗口保存", systemImage: "camera.viewfinder") {
+                        confirmCapture = true
+                    }
+                    .disabled(!isCurrentWorkspace || model.isPresetRunning)
+
+                    Button("补全预设", systemImage: "plus.rectangle.on.rectangle") {
+                        Task { await model.completeCurrentPreset() }
+                    }
+                    .disabled(!isCurrentWorkspace || preset == nil || model.isPresetRunning)
+
+                    Button("恢复布局", systemImage: "rectangle.3.group") {
+                        Task { await model.restoreCurrentLayout() }
+                    }
+                    .disabled(!isCurrentWorkspace || preset == nil || model.isPresetRunning)
+
+                    if model.isPresetRunning { ProgressView().controlSize(.small) }
+                }
+                Text("保存操作会用当前桌面可见的普通窗口替换该工作区的默认预设；不会关闭任何窗口。")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("预设项目") {
+                if let preset, !preset.items.isEmpty, let workspaceID {
+                    List {
+                        ForEach(preset.items.sorted(by: { $0.sortOrder < $1.sortOrder })) { item in
+                            HStack(spacing: 10) {
+                                Image(systemName: icon(for: item.kind))
+                                    .frame(width: 22)
+                                    .foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.displayName).lineLimit(1)
+                                    Text(detail(for: item))
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                if item.windowLayout != nil {
+                                    Label("布局", systemImage: "rectangle.dashed")
+                                        .labelStyle(.iconOnly)
+                                        .foregroundStyle(.secondary)
+                                        .help("已保存窗口布局")
+                                }
+                                Toggle("启用", isOn: Binding(
+                                    get: { item.enabled },
+                                    set: { model.setPresetItemEnabled(
+                                        workspaceID: workspaceID,
+                                        itemID: item.id,
+                                        enabled: $0
+                                    ) }
+                                ))
+                                .labelsHidden()
+                            }
+                        }
+                        .onDelete { model.deletePresetItems(workspaceID: workspaceID, at: $0) }
+                    }
+                    .frame(minHeight: 210)
+                } else {
+                    ContentUnavailableView(
+                        "尚无预设项目",
+                        systemImage: "macwindow.badge.plus",
+                        description: Text("从当前窗口保存，或手动添加应用和资源。")
+                    )
+                    .frame(minHeight: 160)
+                }
+
+                HStack {
+                    Menu("添加项目", systemImage: "plus") {
+                        Button("应用…") { importKind = .application }
+                        Button("文件…") { importKind = .file }
+                        Button("Finder 文件夹…") { importKind = .folder }
+                        Divider()
+                        Button("VS Code 文件夹…") { importKind = .vscodeFolder }
+                        Button("VS Code 工作区…") { importKind = .vscodeWorkspace }
+                    }
+                    .disabled(workspaceID == nil)
+
+                    TextField("https://example.com", text: $urlText)
+                        .textFieldStyle(.roundedBorder)
+                    Button("添加 URL") {
+                        guard let workspaceID else { return }
+                        model.addPresetURL(workspaceID: workspaceID, value: urlText)
+                        urlText = ""
+                    }
+                    .disabled(workspaceID == nil || urlText.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+
+            if let report = model.lastPresetReport {
+                Section("最近执行结果") {
+                    LabeledContent("摘要", value: report.summary)
+                    ForEach(report.outcomes) { result in
+                        HStack {
+                            Image(systemName: result.succeeded ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                                .foregroundStyle(result.succeeded ? .green : .orange)
+                            VStack(alignment: .leading) {
+                                Text(result.displayName)
+                                Text(result.message).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .navigationTitle("预设与窗口")
+        .onAppear { selectedWorkspaceID = model.currentWorkspace?.id ?? model.workspaces.first?.id }
+        .confirmationDialog(
+            "替换 \(workspace?.name ?? "当前工作区") 的预设？",
+            isPresented: $confirmCapture,
+            titleVisibility: .visible
+        ) {
+            Button("用当前窗口替换预设") { model.captureCurrentWindowsAsPreset() }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("现有预设项目将被当前桌面上的可见普通窗口替换。此操作不会移动或关闭窗口。")
+        }
+        .fileImporter(
+            isPresented: Binding(
+                get: { importKind != nil },
+                set: { if !$0 { importKind = nil } }
+            ),
+            allowedContentTypes: allowedContentTypes,
+            allowsMultipleSelection: false
+        ) { result in
+            guard let workspaceID, let kind = importKind else { return }
+            defer { importKind = nil }
+            guard case let .success(urls) = result, let url = urls.first else { return }
+            model.addPresetResource(workspaceID: workspaceID, kind: presetKind(for: kind), url: url)
+        }
+    }
+
+    private var allowedContentTypes: [UTType] {
+        switch importKind {
+        case .application: [.application]
+        case .folder, .vscodeFolder: [.folder]
+        case .vscodeWorkspace: [UTType(filenameExtension: "code-workspace") ?? .json]
+        case .file, .none: [.item]
+        }
+    }
+
+    private func presetKind(for kind: ImportKind) -> PresetItem.Kind {
+        switch kind {
+        case .application: .application
+        case .file: .file
+        case .folder: .finderFolder
+        case .vscodeFolder: .vscodeFolder
+        case .vscodeWorkspace: .vscodeWorkspace
+        }
+    }
+
+    private func icon(for kind: PresetItem.Kind) -> String {
+        switch kind {
+        case .application: "app"
+        case .file: "doc"
+        case .folder, .finderFolder: "folder"
+        case .url, .edgeWindow: "link"
+        case .vscodeFolder, .vscodeWorkspace: "chevron.left.forwardslash.chevron.right"
+        case .command: "terminal"
+        }
+    }
+
+    private func detail(for item: PresetItem) -> String {
+        item.resourcePath ?? item.applicationBundleIdentifier ?? item.kind.rawValue
     }
 }
 

@@ -86,9 +86,18 @@ private struct MenuBarContent: View {
         }
 
         Divider()
-        Button("补全当前预设") { model.showPrototypeMessage("补全预设") }
-        Button("恢复当前布局") { model.showPrototypeMessage("恢复布局") }
-        Button("保存当前状态到预设") { model.showPrototypeMessage("保存当前状态") }
+        Button("补全当前预设") {
+            Task { await model.completeCurrentPreset() }
+        }
+        .disabled(model.currentPreset == nil || model.isPresetRunning)
+        Button("恢复当前布局") {
+            Task { await model.restoreCurrentLayout() }
+        }
+        .disabled(model.currentPreset == nil || model.isPresetRunning)
+        Button("保存当前状态到预设") {
+            model.captureCurrentWindowsAsPreset()
+        }
+        .disabled(model.isPresetRunning)
         Divider()
         Menu("将当前桌面标记为") {
             ForEach(model.workspaces) { workspace in
