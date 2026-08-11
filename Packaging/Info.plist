@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>zh_CN</string>
+    <key>CFBundleDisplayName</key>
+    <string>Butai</string>
+    <key>CFBundleExecutable</key>
+    <string>Butai</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.butai.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Butai</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.2.6</string>
+    <key>CFBundleVersion</key>
+    <string>9</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.productivity</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSInputMonitoringUsageDescription</key>
+    <string>Butai 使用输入监听来识别你配置的全局工作区快捷键，不记录输入内容。</string>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Butai 需要发送系统桌面切换事件，并在你明确执行预设时控制受支持的应用。</string>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2026 Butai.</string>
+</dict>
+</plist>
