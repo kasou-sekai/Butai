@@ -21,6 +21,10 @@ struct SystemSpaceSnapshot: Equatable, Sendable {
         return index + 1
     }
 
+    var isCurrentSpaceFullscreen: Bool {
+        spaces.first(where: { $0.id == currentSpaceID })?.isFullscreen ?? false
+    }
+
     func fullIndex(forRegularOrder order: Int) -> Int? {
         guard regularSpaces.indices.contains(order - 1) else { return nil }
         let id = regularSpaces[order - 1].id

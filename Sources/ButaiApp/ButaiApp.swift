@@ -13,7 +13,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
         overlayController = OverlayController(model: model)
-        spaceObserver = SpaceObserver { [weak model = model] in model?.spaceDidChange() }
+        spaceObserver = SpaceObserver(
+            onSpaceChange: { [weak model = model] in model?.spaceDidChange() },
+            onTopologyPoll: { [weak model = model] in model?.refreshSystemSpaceTopology() }
+        )
         overlayController?.show()
 
         if !CompatibilityChecker.accessibilityIsGranted {

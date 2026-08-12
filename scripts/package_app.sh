@@ -7,7 +7,8 @@ DEVELOPER_ROOT="${DEVELOPER_DIR:-/Volumes/Data/Applications/Xcode-beta.app/Conte
 BUILD_ROOT="${BUTAI_BUILD_ROOT:-/private/tmp/ButaiReleaseBuild}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_PATH="${DIST_DIR}/Butai.app"
-ZIP_PATH="${DIST_DIR}/Butai-0.4.5-macOS.zip"
+APP_VERSION="$(plutil -extract CFBundleShortVersionString raw "${PROJECT_DIR}/Packaging/Info.plist")"
+ZIP_PATH="${DIST_DIR}/Butai-${APP_VERSION}-macOS.zip"
 ARCHIVE_DIR="${DIST_DIR}/archive"
 
 if [[ -e "${ZIP_PATH}" ]]; then

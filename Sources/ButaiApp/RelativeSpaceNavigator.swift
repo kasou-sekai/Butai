@@ -38,7 +38,7 @@ actor PrivateSpaceNavigator: SpaceNavigating {
         // target Desktop through macOS's own numbered symbolic hotkey instead;
         // this is the classic fallback used by WhichSpace and does not depend
         // on the user's current shortcut assignment or enabled state.
-        guard postClassicDesktop(number: targetOrder) else {
+        guard await postClassicDesktop(number: targetOrder) else {
             throw SpaceNavigationError.interrupted
         }
     }
@@ -57,30 +57,65 @@ actor PrivateSpaceNavigator: SpaceNavigating {
     /// pressed. WindowServer silently discards synthetic swipe gestures in
     /// that state, so use the system's symbolic Mission Control hotkey for
     /// that step. This mirrors WhichSpace's click-to-switch fallback.
-    private func postClassicDesktop(number: Int) -> Bool {
+    private func postClassicDesktop(number: Int) async -> Bool {
         guard (1...16).contains(number) else { return false }
-        return postSymbolicHotKey(118 + Int32(number - 1))
+        return await postSymbolicHotKey(118 + Int32(number - 1))
     }
 
-    private func postClassicStep(goRight: Bool) -> Bool {
-        postSymbolicHotKey(goRight ? 81 : 79)
+    private func postClassicStep(goRight: Bool) async -> Bool {
+        await postSymbolicHotKey(goRight ? 81 : 79)
     }
 
-    private func postSymbolicHotKey(_ hotKey: Int32) -> Bool {
+    private func postSymbolicHotKey(_ hotKey: Int32) async -> Bool {
         guard let symbols = SymbolicHotKeySymbols.shared else { return false }
-        var keyCode: CGKeyCode = 0
-        var flags: UInt32 = 0
-        guard symbols.getValue(hotKey, nil, &keyCode, &flags) == .success else { return false }
+        var originalCharacter: UniChar = 0
+        var originalKeyCode: CGKeyCode = 0
+        var originalFlags: UInt32 = 0
+        guard symbols.getValue(
+            hotKey,
+            &originalCharacter,
+            &originalKeyCode,
+            &originalFlags
+        ) == .success else { return false }
+
+        // Temporarily bind the symbolic action to an intentionally obscure
+        // chord instead of emitting the user's Control+number shortcut into
+        // the foreground app. Use a key present on every supported keyboard;
+        // some keyboards reject synthetic high function keys with an alert
+        // sound before WindowServer can consume the symbolic shortcut.
+        let privateCharacter: UniChar = 0x39 // "9"
+        let privateKeyCode: CGKeyCode = 25 // kVK_ANSI_9
+        let privateFlags = UInt32(
+            CGEventFlags.maskCommand.rawValue
+                | CGEventFlags.maskShift.rawValue
+                | CGEventFlags.maskAlternate.rawValue
+                | CGEventFlags.maskControl.rawValue
+        )
+        guard symbols.setValue(hotKey, privateCharacter, privateKeyCode, privateFlags) == .success else {
+            return false
+        }
         let wasEnabled = symbols.isEnabled(hotKey) != 0
-        if !wasEnabled, symbols.setEnabled(hotKey, 1) != .success { return false }
+        if !wasEnabled, symbols.setEnabled(hotKey, 1) != .success {
+            _ = symbols.setValue(hotKey, originalCharacter, originalKeyCode, originalFlags)
+            return false
+        }
         defer {
             if !wasEnabled { _ = symbols.setEnabled(hotKey, 0) }
+            _ = symbols.setValue(hotKey, originalCharacter, originalKeyCode, originalFlags)
         }
-        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return false }
-        keyDown.flags = CGEventFlags(rawValue: UInt64(flags))
+        guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: privateKeyCode, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: privateKeyCode, keyDown: false) else {
+            return false
+        }
+        keyDown.flags = CGEventFlags(rawValue: UInt64(privateFlags))
+        keyUp.flags = CGEventFlags(rawValue: UInt64(privateFlags))
         keyDown.post(tap: .cghidEventTap)
         keyUp.post(tap: .cghidEventTap)
+
+        // CGEvent posting is asynchronous. Keep the temporary mapping active
+        // until WindowServer has consumed the chord, then restore the user's
+        // exact key and enabled state.
+        try? await Task.sleep(for: .milliseconds(160))
         return true
     }
 
@@ -112,12 +147,14 @@ private final class SymbolicHotKeySymbols: @unchecked Sendable {
     typealias GetValue = @convention(c) (
         Int32, UnsafeMutablePointer<UniChar>?, UnsafeMutablePointer<CGKeyCode>?, UnsafeMutablePointer<UInt32>?
     ) -> CGError
+    typealias SetValue = @convention(c) (Int32, UniChar, CGKeyCode, UInt32) -> CGError
     typealias IsEnabled = @convention(c) (Int32) -> UInt8
     typealias SetEnabled = @convention(c) (Int32, UInt8) -> CGError
 
     static let shared: SymbolicHotKeySymbols? = SymbolicHotKeySymbols()
 
     let getValue: GetValue
+    let setValue: SetValue
     let isEnabled: IsEnabled
     let setEnabled: SetEnabled
     private let handle: UnsafeMutableRawPointer
@@ -126,10 +163,12 @@ private final class SymbolicHotKeySymbols: @unchecked Sendable {
         let path = "/System/Library/PrivateFrameworks/SkyLight.framework/SkyLight"
         guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL),
               let getValue = dlsym(handle, "CGSGetSymbolicHotKeyValue"),
+              let setValue = dlsym(handle, "CGSSetSymbolicHotKeyValue"),
               let isEnabled = dlsym(handle, "CGSIsSymbolicHotKeyEnabled"),
               let setEnabled = dlsym(handle, "CGSSetSymbolicHotKeyEnabled") else { return nil }
         self.handle = handle
         self.getValue = unsafeBitCast(getValue, to: GetValue.self)
+        self.setValue = unsafeBitCast(setValue, to: SetValue.self)
         self.isEnabled = unsafeBitCast(isEnabled, to: IsEnabled.self)
         self.setEnabled = unsafeBitCast(setEnabled, to: SetEnabled.self)
     }

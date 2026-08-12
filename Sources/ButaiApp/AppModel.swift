@@ -13,6 +13,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var needsInitialSetup = false
     @Published private(set) var spaceDetectionAvailable = false
     @Published private(set) var detectedSystemSpaceCount: Int?
+    @Published private(set) var isCurrentSpaceFullscreen = false
     @Published private(set) var isPresetRunning = false
     @Published private(set) var lastPresetReport: PresetExecutionReport?
 
@@ -21,6 +22,7 @@ final class AppModel: ObservableObject {
     private let spaceProvider: any SystemSpaceProviding
     private let presetEngine: WindowPresetEngine
     private var saveTask: Task<Void, Never>?
+    private var lastSystemSpaceSnapshot: SystemSpaceSnapshot?
 
     init(
         repository: ConfigurationRepository = .defaultRepository(),
@@ -215,6 +217,10 @@ final class AppModel: ObservableObject {
             pendingTargetOrder = nil
         }
         transientMessage = nil
+    }
+
+    func refreshSystemSpaceTopology() {
+        _ = synchronizeWithSystemSpaces()
     }
 
     func displayEnvironmentDidChange() {
@@ -512,13 +518,21 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func synchronizeWithSystemSpaces() -> Int? {
         guard let snapshot = spaceProvider.snapshot() else {
+            lastSystemSpaceSnapshot = nil
             spaceDetectionAvailable = false
             detectedSystemSpaceCount = nil
+            isCurrentSpaceFullscreen = false
             configuration.calibration.reliability = .uncertain
             return nil
         }
 
+        if snapshot == lastSystemSpaceSnapshot {
+            return snapshot.currentRegularOrder
+        }
+        lastSystemSpaceSnapshot = snapshot
+
         let actualCount = snapshot.regularSpaces.count
+        isCurrentSpaceFullscreen = snapshot.isCurrentSpaceFullscreen
         detectedSystemSpaceCount = actualCount
         spaceDetectionAvailable = true
         needsInitialSetup = false
