@@ -20,11 +20,11 @@ Butai 是一个 macOS 原生 Spaces 增强工具。当前仓库包含可运行�
 - 在当前桌面明确创建 Finder 新窗口，避免复用其他桌面的 Finder 窗口；
 - VS Code Stable、Insiders 和 VSCodium 的独立项目窗口；
 - Microsoft Edge 独立窗口、多个启动 URL 和可选 Profile；
-- ChatGPT 启动、窗口匹配和布局恢复（实验性）；
+- ChatGPT / Codex 统一桌面应用的启动、窗口匹配和布局恢复（实验性）；
 - 适配器健康状态、失败隔离和逐项目诊断；
 - 私有 Space ID 仅用于运行时快照，不写入配置文件。
 
-Caps Lock 事件吞噬仍属于后续阶段。Finder、VS Code 和 Edge 使用资源路径或 URL 进行高置信度匹配；资源不明确时会安全降级为通用应用窗口。ChatGPT 不承诺恢复指定聊天。
+Caps Lock 事件吞噬仍属于后续阶段。Finder、VS Code 和 Edge 使用资源路径或 URL 进行高置信度匹配；资源不明确时会安全降级为通用应用窗口。ChatGPT / Codex 不承诺恢复指定聊天。完整缺口与安全审计见 `AUDIT_2026-08-12.md`。
 
 ## 运行
 

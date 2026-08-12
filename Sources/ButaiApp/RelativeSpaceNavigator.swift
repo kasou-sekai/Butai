@@ -71,8 +71,11 @@ actor PrivateSpaceNavigator: SpaceNavigating {
         var keyCode: CGKeyCode = 0
         var flags: UInt32 = 0
         guard symbols.getValue(hotKey, nil, &keyCode, &flags) == .success else { return false }
-        if symbols.isEnabled(hotKey) == 0,
-           symbols.setEnabled(hotKey, 1) != .success { return false }
+        let wasEnabled = symbols.isEnabled(hotKey) != 0
+        if !wasEnabled, symbols.setEnabled(hotKey, 1) != .success { return false }
+        defer {
+            if !wasEnabled { _ = symbols.setEnabled(hotKey, 0) }
+        }
         guard let keyDown = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true),
               let keyUp = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: false) else { return false }
         keyDown.flags = CGEventFlags(rawValue: UInt64(flags))

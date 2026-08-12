@@ -1,9 +1,11 @@
 import AppKit
 import ApplicationServices
 import ButaiCore
+import Darwin
 import Foundation
 
 struct RuntimeWindowSnapshot {
+    let windowID: CGWindowID
     let pid: pid_t
     let bundleIdentifier: String
     let applicationName: String
@@ -29,6 +31,39 @@ struct AdapterHealth: Identifiable, Equatable {
     let name: String
     let state: State
     let detail: String
+}
+
+struct FinderWindowMetadata: Decodable {
+    let windowID: CGWindowID
+    let title: String
+    let documentURL: String
+}
+
+enum FinderWindowMetadataProvider {
+    static func load(timeoutSeconds: Double = 1.5) async -> [CGWindowID: FinderWindowMetadata] {
+        let script = """
+        const finder = Application('Finder');
+        const result = finder.windows().map(window => {
+          let documentURL = '';
+          try { documentURL = String(window.target().url()); } catch (_) {}
+          return {
+            windowID: Number(window.id()),
+            title: String(window.name()),
+            documentURL: documentURL
+          };
+        });
+        JSON.stringify(result);
+        """
+        guard let result = try? await ProcessRunner.runCapturingOutput(
+            executable: "/usr/bin/osascript",
+            arguments: ["-l", "JavaScript", "-e", script],
+            timeoutSeconds: timeoutSeconds
+        ), result.status == 0,
+        let metadata = try? JSONDecoder().decode([FinderWindowMetadata].self, from: result.standardOutput) else {
+            return [:]
+        }
+        return Dictionary(metadata.map { ($0.windowID, $0) }, uniquingKeysWith: { first, _ in first })
+    }
 }
 
 enum AdapterOpenError: LocalizedError {
@@ -104,10 +139,10 @@ private final class FinderAdapter: ApplicationAdapter {
             resourcePath: path,
             displayName: window.title.isEmpty ? URL(fileURLWithPath: path).lastPathComponent : window.title,
             openPolicy: .newWindowRequired,
-            matchRules: [
-                WindowMatchRule(kind: .resourcePath, value: path, weight: 45),
-                WindowMatchRule(kind: .titleExact, value: window.title, weight: 15)
-            ],
+            matchRules: [WindowMatchRule(kind: .resourcePath, value: path, weight: 45)]
+                + (window.title.isEmpty ? [] : [
+                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 15)
+                ]),
             windowLayout: layout,
             sortOrder: sortOrder
         )
@@ -129,9 +164,10 @@ private final class FinderAdapter: ApplicationAdapter {
             executable: "/usr/bin/osascript",
             arguments: [
                 "-e", "on run argv",
-                "-e", "set targetFolder to POSIX file (item 1 of argv)",
+                "-e", "set targetFolder to (POSIX file (item 1 of argv)) as alias",
                 "-e", "tell application \"Finder\"",
-                "-e", "make new Finder window to targetFolder",
+                "-e", "set createdWindow to make new Finder window",
+                "-e", "set target of createdWindow to targetFolder",
                 "-e", "activate",
                 "-e", "end tell",
                 "-e", "end run",
@@ -244,10 +280,10 @@ private final class EdgeAdapter: ApplicationAdapter {
             resourcePath: value,
             displayName: window.title.isEmpty ? value : window.title,
             openPolicy: .newWindowRequired,
-            matchRules: [
-                WindowMatchRule(kind: .documentURL, value: value, weight: 45),
-                WindowMatchRule(kind: .titleExact, value: window.title, weight: 15)
-            ],
+            matchRules: [WindowMatchRule(kind: .documentURL, value: value, weight: 45)]
+                + (window.title.isEmpty ? [] : [
+                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 15)
+                ]),
             windowLayout: layout,
             sortOrder: sortOrder
         )
@@ -290,8 +326,8 @@ private final class EdgeAdapter: ApplicationAdapter {
 @MainActor
 private final class ChatGPTAdapter: ApplicationAdapter {
     let id = "chatgpt"
-    let displayName = "ChatGPT（实验性）"
-    private let bundleIdentifiers = ["com.openai.chat"]
+    let displayName = "ChatGPT / Codex（实验性）"
+    private let bundleIdentifiers = ["com.openai.codex", "com.openai.chat"]
 
     func supports(item: PresetItem) -> Bool {
         item.kind == .chatGPTWindow
@@ -306,7 +342,7 @@ private final class ChatGPTAdapter: ApplicationAdapter {
             kind: .chatGPTWindow,
             applicationBundleIdentifier: window.bundleIdentifier,
             applicationPath: window.applicationPath,
-            displayName: window.title.isEmpty ? "ChatGPT" : window.title,
+            displayName: window.title.isEmpty ? "ChatGPT / Codex" : window.title,
             openPolicy: .reusePreferred,
             matchRules: window.title.isEmpty ? [] : [
                 WindowMatchRule(kind: .titleExact, value: window.title, weight: 35)
@@ -317,8 +353,12 @@ private final class ChatGPTAdapter: ApplicationAdapter {
     }
 
     func open(item: PresetItem) async throws {
-        guard let applicationURL = AdapterApplications.url(for: item, candidates: bundleIdentifiers) else {
-            throw AdapterOpenError.applicationNotFound("ChatGPT")
+        // Prefer the current unified ChatGPT/Codex bundle over a stale path or the
+        // legacy ChatGPT bundle saved by older Butai releases.
+        guard let applicationURL = bundleIdentifiers.lazy.compactMap({
+            NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+        }).first ?? AdapterApplications.url(for: item, candidates: bundleIdentifiers) else {
+            throw AdapterOpenError.applicationNotFound("ChatGPT / Codex")
         }
         NSWorkspace.shared.openApplication(
             at: applicationURL,
@@ -333,7 +373,7 @@ private final class ChatGPTAdapter: ApplicationAdapter {
             id: id,
             name: displayName,
             state: installed ? .experimental : .unavailable,
-            detail: installed ? "可启动、匹配和恢复；不保证创建指定聊天窗口" : "未安装 ChatGPT"
+            detail: installed ? "可启动或激活 Codex；新窗口支持暂缓，不保证打开指定聊天" : "未安装 ChatGPT / Codex"
         )
     }
 }
@@ -352,15 +392,65 @@ private enum AdapterApplications {
 }
 
 private enum ProcessRunner {
-    static func run(executable: String, arguments: [String], failureMessage: String) async throws {
-        let status = try await Task.detached {
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: executable)
-            process.arguments = arguments
-            try process.run()
-            process.waitUntilExit()
-            return process.terminationStatus
+    struct Result: Sendable {
+        let status: Int32
+        let standardOutput: Data
+        let standardError: Data
+    }
+
+    private final class ProcessBox: @unchecked Sendable {
+        let process = Process()
+    }
+
+    static func run(
+        executable: String,
+        arguments: [String],
+        failureMessage: String,
+        timeoutSeconds: Double = 15
+    ) async throws {
+        let result = try await runCapturingOutput(
+            executable: executable,
+            arguments: arguments,
+            timeoutSeconds: timeoutSeconds
+        )
+        guard result.status == 0 else { throw AdapterOpenError.launchFailed(failureMessage) }
+    }
+
+    static func runCapturingOutput(
+        executable: String,
+        arguments: [String],
+        timeoutSeconds: Double
+    ) async throws -> Result {
+        try await Task.detached {
+            let box = ProcessBox()
+            let outputPipe = Pipe()
+            let errorPipe = Pipe()
+            box.process.executableURL = URL(fileURLWithPath: executable)
+            box.process.arguments = arguments
+            box.process.standardOutput = outputPipe
+            box.process.standardError = errorPipe
+            try box.process.run()
+
+            let deadline = Date().addingTimeInterval(max(timeoutSeconds, 0.1))
+            while box.process.isRunning, Date() < deadline, !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            if box.process.isRunning {
+                box.process.terminate()
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            if box.process.isRunning {
+                _ = Darwin.kill(box.process.processIdentifier, SIGKILL)
+                box.process.waitUntilExit()
+            }
+
+            let output = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let error = errorPipe.fileHandleForReading.readDataToEndOfFile()
+            return Result(
+                status: box.process.terminationStatus,
+                standardOutput: output,
+                standardError: error
+            )
         }.value
-        guard status == 0 else { throw AdapterOpenError.launchFailed(failureMessage) }
     }
 }

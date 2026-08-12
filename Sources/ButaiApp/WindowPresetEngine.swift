@@ -6,6 +6,11 @@ import Foundation
 
 @MainActor
 final class WindowPresetEngine {
+    struct CaptureResult {
+        let items: [PresetItem]
+        let unresolvedFinderWindowCount: Int
+    }
+
     private let adapterRegistry: AdapterRegistry
 
     init(adapterRegistry: AdapterRegistry = AdapterRegistry()) {
@@ -14,25 +19,35 @@ final class WindowPresetEngine {
 
     var adapterHealth: [AdapterHealth] { adapterRegistry.health }
 
-    func captureVisibleWindows() -> [PresetItem] {
-        discoverVisibleWindows().enumerated().map { index, window in
+    func captureVisibleWindows() async -> CaptureResult {
+        // The first capture may show the system Automation consent prompt.
+        let windows = await enrichingFinderMetadata(in: discoverVisibleWindows(), timeoutSeconds: 8)
+        var items: [PresetItem] = []
+        var unresolvedFinderWindowCount = 0
+        for window in windows {
+            let index = items.count
             let layout = normalizedLayout(for: window.bounds)
             if let adapted = adapterRegistry.capture(window: window, layout: layout, sortOrder: index) {
-                return adapted
+                items.append(adapted)
+                continue
+            }
+            if window.bundleIdentifier == "com.apple.finder" {
+                unresolvedFinderWindowCount += 1
+                continue
             }
             let applicationURL = window.applicationPath.map { URL(fileURLWithPath: $0) }
             let rules: [WindowMatchRule]
             if let resourcePath = window.resourcePath {
-                rules = [
-                    WindowMatchRule(kind: .resourcePath, value: resourcePath, weight: 40),
-                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 20)
-                ]
+                rules = [WindowMatchRule(kind: .resourcePath, value: resourcePath, weight: 45)]
+                + (window.title.isEmpty ? [] : [
+                    WindowMatchRule(kind: .titleExact, value: window.title, weight: 15)
+                ])
             } else if window.title.isEmpty {
                 rules = []
             } else {
                 rules = [WindowMatchRule(kind: .titleExact, value: window.title, weight: 35)]
             }
-            return PresetItem(
+            items.append(PresetItem(
                 kind: .application,
                 applicationBundleIdentifier: window.bundleIdentifier,
                 applicationPath: applicationURL?.path,
@@ -41,8 +56,9 @@ final class WindowPresetEngine {
                 matchRules: rules,
                 windowLayout: layout,
                 sortOrder: index
-            )
+            ))
         }
+        return CaptureResult(items: items, unresolvedFinderWindowCount: unresolvedFinderWindowCount)
     }
 
     func execute(preset: Preset, mode: PresetExecutionReport.Mode) async -> PresetExecutionReport {
@@ -78,9 +94,9 @@ final class WindowPresetEngine {
         }
 
         return raw.compactMap { info in
-            guard let rawBounds = info[kCGWindowBounds as String] else { return nil }
-            let boundsDictionary = rawBounds as! CFDictionary
-            guard let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
+            guard let boundsDictionary = info[kCGWindowBounds as String] as? NSDictionary,
+                  let windowID = info[kCGWindowNumber as String] as? CGWindowID,
+                  let layer = info[kCGWindowLayer as String] as? Int, layer == 0,
                   let ownerPID = info[kCGWindowOwnerPID as String] as? pid_t,
                   let bounds = CGRect(dictionaryRepresentation: boundsDictionary),
                   bounds.width >= 120, bounds.height >= 80,
@@ -91,6 +107,7 @@ final class WindowPresetEngine {
             let title = (info[kCGWindowName as String] as? String) ?? ""
             guard !title.isEmpty || bounds.width >= 320 else { return nil }
             let baseWindow = RuntimeWindowSnapshot(
+                windowID: windowID,
                 pid: ownerPID,
                 bundleIdentifier: bundleIdentifier,
                 applicationName: application.localizedName ?? bundleIdentifier,
@@ -102,6 +119,7 @@ final class WindowPresetEngine {
             )
             let documentURL = accessibilityDocumentURL(matching: baseWindow)
             return RuntimeWindowSnapshot(
+                windowID: baseWindow.windowID,
                 pid: baseWindow.pid,
                 bundleIdentifier: baseWindow.bundleIdentifier,
                 applicationName: baseWindow.applicationName,
@@ -115,7 +133,16 @@ final class WindowPresetEngine {
     }
 
     private func execute(item: PresetItem, mode: PresetExecutionReport.Mode) async -> PresetItemOutcome {
+        if item.kind == .application,
+           item.applicationBundleIdentifier == "com.apple.finder",
+           item.resourcePath == nil {
+            return outcome(item, .resourceUnavailable, "旧预设没有保存 Finder 文件夹路径；请打开目标文件夹后重新保存当前窗口")
+        }
         var windows = discoverVisibleWindows()
+        if item.kind == .finderFolder {
+            windows = await enrichingFinderMetadata(in: windows)
+        }
+        let initialWindowIDs = Set(windows.map(\.windowID))
         if let existing = bestMatch(for: item, in: windows) {
             if mode == .restore, let layout = item.windowLayout {
                 guard existing.match.confidence == .high else {
@@ -159,10 +186,16 @@ final class WindowPresetEngine {
         repeat {
             try? await Task.sleep(for: .milliseconds(250))
             windows = discoverVisibleWindows()
-            if let opened = bestMatch(for: item, in: windows) {
+            if item.kind == .finderFolder {
+                windows = await enrichingFinderMetadata(in: windows)
+            }
+            let newlyOpenedWindows = windows.filter { !initialWindowIDs.contains($0.windowID) }
+            let matched = bestMatch(for: item, in: newlyOpenedWindows) ?? bestMatch(for: item, in: windows)
+            let fallback = matched == nil ? newlyOpenedFinderWindow(for: item, in: newlyOpenedWindows) : nil
+            if let openedWindow = matched?.window ?? fallback {
                 if mode == .restore, let layout = item.windowLayout,
-                   opened.match.confidence == .high {
-                    return restore(window: opened.window, layout: layout)
+                   matched?.match.confidence == .high || fallback != nil {
+                    return restore(window: openedWindow, layout: layout)
                         ? outcome(item, .restored, "已打开并恢复布局")
                         : outcome(item, .permissionDenied, "项目已打开，但无法调整窗口")
                 }
@@ -174,6 +207,44 @@ final class WindowPresetEngine {
             return outcome(item, .cancelled, "任务已取消")
         }
         return outcome(item, .windowTimeout, "已发出打开请求，但未在限定时间内匹配到窗口")
+    }
+
+    private func enrichingFinderMetadata(
+        in windows: [RuntimeWindowSnapshot],
+        timeoutSeconds: Double = 1.5
+    ) async -> [RuntimeWindowSnapshot] {
+        guard windows.contains(where: { $0.bundleIdentifier == "com.apple.finder" }) else { return windows }
+        let metadataByID = await FinderWindowMetadataProvider.load(timeoutSeconds: timeoutSeconds)
+        guard !metadataByID.isEmpty else { return windows }
+
+        return windows.map { window in
+            guard window.bundleIdentifier == "com.apple.finder" else { return window }
+            let metadata = metadataByID[window.windowID] ?? metadataByID.values.first { candidate in
+                candidate.title == window.title && metadataByID.values.count(where: { $0.title == window.title }) == 1
+            }
+            guard let metadata, !metadata.documentURL.isEmpty else { return window }
+            return RuntimeWindowSnapshot(
+                windowID: window.windowID,
+                pid: window.pid,
+                bundleIdentifier: window.bundleIdentifier,
+                applicationName: window.applicationName,
+                applicationPath: window.applicationPath,
+                title: window.title,
+                bounds: window.bounds,
+                documentURL: metadata.documentURL,
+                resourcePath: resourcePath(from: metadata.documentURL)
+            )
+        }
+    }
+
+    private func newlyOpenedFinderWindow(
+        for item: PresetItem,
+        in windows: [RuntimeWindowSnapshot]
+    ) -> RuntimeWindowSnapshot? {
+        guard item.kind == .finderFolder else { return nil }
+        let finderWindows = windows.filter { $0.bundleIdentifier == "com.apple.finder" }
+        guard finderWindows.count == 1 else { return nil }
+        return finderWindows[0]
     }
 
     private func bestMatch(
@@ -270,6 +341,9 @@ final class WindowPresetEngine {
             _ = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
             _ = AXUIElementPerformAction(element, kAXRaiseAction as CFString)
         }
+        if layout.minimized {
+            _ = AXUIElementSetAttributeValue(element, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+        }
         return positionResult == .success && sizeResult == .success
     }
 
@@ -282,6 +356,13 @@ final class WindowPresetEngine {
             &rawWindows
         ) == .success,
         let windows = rawWindows as? [AXUIElement] else { return nil }
+
+        if let exact = windows.first(where: { element in
+            let number: NSNumber? = copyAttribute(element, "AXWindowNumber" as CFString)
+            return number?.uint32Value == runtime.windowID
+        }) {
+            return exact
+        }
 
         return windows.min { lhs, rhs in
             accessibilityDistance(lhs, to: runtime) < accessibilityDistance(rhs, to: runtime)

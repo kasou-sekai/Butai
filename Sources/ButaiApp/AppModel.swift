@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     let navigator: any SpaceNavigating
     private let spaceProvider: any SystemSpaceProviding
     private let presetEngine: WindowPresetEngine
+    private var saveTask: Task<Void, Never>?
 
     init(
         repository: ConfigurationRepository = .defaultRepository(),
@@ -61,6 +62,9 @@ final class AppModel: ObservableObject {
         do {
             if let saved = try await repository.load() {
                 configuration = saved
+                if migrateLegacyPresetItems() {
+                    persist()
+                }
             }
         } catch {
             transientMessage = "配置读取失败，已安全启动为空配置：\(error.localizedDescription)"
@@ -236,7 +240,7 @@ final class AppModel: ObservableObject {
         setOverlayOffsets(horizontal: 0, vertical: 0)
     }
 
-    func captureCurrentWindowsAsPreset() {
+    func captureCurrentWindowsAsPreset() async {
         guard CompatibilityChecker.accessibilityIsGranted else {
             transientMessage = "保存预设需要辅助功能权限，才能读取 Finder 文件夹和窗口信息。"
             CompatibilityChecker.requestAccessibility()
@@ -246,9 +250,12 @@ final class AppModel: ObservableObject {
             transientMessage = "无法确定当前工作区，未保存预设。"
             return
         }
-        let items = presetEngine.captureVisibleWindows()
+        let capture = await presetEngine.captureVisibleWindows()
+        let items = capture.items
         guard !items.isEmpty else {
-            transientMessage = "当前桌面没有可保存的普通窗口。"
+            transientMessage = capture.unresolvedFinderWindowCount > 0
+                ? "无法读取 Finder 文件夹路径。请允许 Butai 控制 Finder 后重试。"
+                : "当前桌面没有可保存的普通窗口。"
             return
         }
 
@@ -269,7 +276,11 @@ final class AppModel: ObservableObject {
         }
         configuration.workspaces[workspaceIndex].updatedAt = now
         lastPresetReport = nil
-        transientMessage = "已从当前桌面保存 \(items.count) 个窗口到“\(workspace.name)”预设。"
+        if capture.unresolvedFinderWindowCount > 0 {
+            transientMessage = "已保存 \(items.count) 个窗口；另有 \(capture.unresolvedFinderWindowCount) 个 Finder 窗口因缺少自动化权限未保存。"
+        } else {
+            transientMessage = "已从当前桌面保存 \(items.count) 个窗口到“\(workspace.name)”预设。"
+        }
         persist()
     }
 
@@ -373,15 +384,61 @@ final class AppModel: ObservableObject {
 
     func addChatGPTWindow(workspaceID: UUID) {
         guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }) else { return }
+        let application = preferredChatGPTApplication()
         appendPresetItem(
             PresetItem(
                 kind: .chatGPTWindow,
-                applicationBundleIdentifier: "com.openai.chat",
-                displayName: "ChatGPT",
+                applicationBundleIdentifier: application?.bundleIdentifier ?? "com.openai.codex",
+                applicationPath: application?.url.path,
+                displayName: "ChatGPT / Codex",
                 openPolicy: .reusePreferred
             ),
             workspaceIndex: workspaceIndex
         )
+    }
+
+    private func preferredChatGPTApplication() -> (bundleIdentifier: String, url: URL)? {
+        for identifier in ["com.openai.codex", "com.openai.chat"] {
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
+                return (identifier, url)
+            }
+        }
+        return nil
+    }
+
+    @discardableResult
+    private func migrateLegacyPresetItems() -> Bool {
+        let chatGPTApplication = preferredChatGPTApplication()
+        var changed = false
+        for workspaceIndex in configuration.workspaces.indices {
+            for presetIndex in configuration.workspaces[workspaceIndex].presets.indices {
+                for itemIndex in configuration.workspaces[workspaceIndex].presets[presetIndex].items.indices {
+                    var item = configuration.workspaces[workspaceIndex].presets[presetIndex].items[itemIndex]
+                    var itemChanged = false
+                    if item.kind == .chatGPTWindow, let application = chatGPTApplication,
+                       (item.applicationBundleIdentifier != application.bundleIdentifier ||
+                        item.applicationPath != application.url.path ||
+                        item.openPolicy != .reusePreferred) {
+                        item.applicationBundleIdentifier = application.bundleIdentifier
+                        item.applicationPath = application.url.path
+                        item.openPolicy = .reusePreferred
+                        itemChanged = true
+                    }
+                    if item.kind == .folder, let path = item.resourcePath {
+                        item.kind = .finderFolder
+                        item.applicationBundleIdentifier = "com.apple.finder"
+                        item.openPolicy = .newWindowRequired
+                        item.matchRules = [WindowMatchRule(kind: .resourcePath, value: path, weight: 45)]
+                        itemChanged = true
+                    }
+                    if itemChanged {
+                        configuration.workspaces[workspaceIndex].presets[presetIndex].items[itemIndex] = item
+                        changed = true
+                    }
+                }
+            }
+        }
+        return changed
     }
 
     func setPresetItemEnabled(workspaceID: UUID, itemID: UUID, enabled: Bool) {
@@ -507,13 +564,13 @@ final class AppModel: ObservableObject {
 
     private func persist() {
         let snapshot = configuration
-        Task {
+        let previousSave = saveTask
+        saveTask = Task {
+            _ = await previousSave?.result
             do {
                 try await repository.save(snapshot)
             } catch {
-                await MainActor.run {
-                    transientMessage = "配置保存失败：\(error.localizedDescription)"
-                }
+                transientMessage = "配置保存失败：\(error.localizedDescription)"
             }
         }
     }

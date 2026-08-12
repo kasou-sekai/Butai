@@ -68,6 +68,13 @@ struct ButaiCoreTests {
         #expect(loaded?.workspaces[0].presets.first?.items == configuration.workspaces[0].presets.first?.items)
         #expect(backup?.workspaces.map(\.id) == firstVersion.workspaces.map(\.id))
         #expect(backup?.workspaces.map(\.name) == firstVersion.workspaces.map(\.name))
+
+        let directoryMode = try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber
+        let configurationMode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
+        let backupMode = try FileManager.default.attributesOfItem(atPath: url.appendingPathExtension("backup").path)[.posixPermissions] as? NSNumber
+        #expect(directoryMode?.intValue == 0o700)
+        #expect(configurationMode?.intValue == 0o600)
+        #expect(backupMode?.intValue == 0o600)
     }
 
     @Test("Preset execution report counts successes and issues")
@@ -172,6 +179,56 @@ struct ButaiCoreTests {
             item: folder,
             match: WindowMatcher.match(item: folder, window: wrongFolder)
         ))
+    }
+
+    @Test("Window matching normalizes file paths and safe URL variants")
+    func normalizedResourceMatching() {
+        let folder = PresetItem(
+            kind: .finderFolder,
+            applicationBundleIdentifier: "com.apple.finder",
+            resourcePath: "/tmp/Folder Name/",
+            displayName: "Folder Name",
+            matchRules: [WindowMatchRule(kind: .resourcePath, value: "/tmp/Folder Name/", weight: 45)]
+        )
+        let finderWindow = DiscoveredWindow(
+            bundleIdentifier: "com.apple.finder",
+            title: "Folder Name",
+            resourcePath: "file:///tmp/Folder%20Name"
+        )
+        let webItem = PresetItem(
+            kind: .edgeWindow,
+            applicationBundleIdentifier: "com.microsoft.edgemac",
+            displayName: "Example",
+            matchRules: [WindowMatchRule(kind: .documentURL, value: "https://EXAMPLE.com:443/path", weight: 45)]
+        )
+        let edgeWindow = DiscoveredWindow(
+            bundleIdentifier: "com.microsoft.edgemac",
+            title: "Example",
+            documentURL: "https://example.com/path"
+        )
+
+        #expect(WindowMatcher.isAcceptable(item: folder, match: WindowMatcher.match(item: folder, window: finderWindow)))
+        #expect(WindowMatcher.isAcceptable(item: webItem, match: WindowMatcher.match(item: webItem, window: edgeWindow)))
+    }
+
+    @Test("Invalid or oversized title regex rules fail closed")
+    func unsafeRegexRules() {
+        let invalid = PresetItem(
+            kind: .application,
+            applicationBundleIdentifier: "com.example.App",
+            displayName: "App",
+            matchRules: [WindowMatchRule(kind: .titleRegex, value: "(", weight: 45)]
+        )
+        let oversized = PresetItem(
+            kind: .application,
+            applicationBundleIdentifier: "com.example.App",
+            displayName: "App",
+            matchRules: [WindowMatchRule(kind: .titleRegex, value: String(repeating: "a", count: 513), weight: 45)]
+        )
+        let window = DiscoveredWindow(bundleIdentifier: "com.example.App", title: "aaaa")
+
+        #expect(!WindowMatcher.isAcceptable(item: invalid, match: WindowMatcher.match(item: invalid, window: window)))
+        #expect(!WindowMatcher.isAcceptable(item: oversized, match: WindowMatcher.match(item: oversized, window: window)))
     }
 
     @Test("Navigation intent validates bounds")

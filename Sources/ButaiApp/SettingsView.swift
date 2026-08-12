@@ -267,7 +267,9 @@ private struct PresetSettingsView: View {
             isPresented: $confirmCapture,
             titleVisibility: .visible
         ) {
-            Button("用当前窗口替换预设") { model.captureCurrentWindowsAsPreset() }
+            Button("用当前窗口替换预设") {
+                Task { await model.captureCurrentWindowsAsPreset() }
+            }
             Button("取消", role: .cancel) {}
         } message: {
             Text("现有预设项目将被当前桌面上的可见普通窗口替换。此操作不会移动或关闭窗口。")

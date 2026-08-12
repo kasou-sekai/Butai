@@ -76,15 +76,40 @@ public enum WindowMatcher {
         case .titleSuffix:
             return window.title.hasSuffix(rule.value)
         case .titleRegex:
-            return window.title.range(of: rule.value, options: .regularExpression) != nil
+            guard rule.value.count <= 512, window.title.count <= 4_096,
+                  let expression = try? NSRegularExpression(pattern: rule.value) else { return false }
+            let range = NSRange(window.title.startIndex..., in: window.title)
+            return expression.firstMatch(in: window.title, range: range) != nil
         case .documentURL:
-            return window.documentURL == rule.value
+            return normalizedURLString(window.documentURL) == normalizedURLString(rule.value)
         case .resourcePath:
-            return window.resourcePath == rule.value
+            return normalizedFilePath(window.resourcePath) == normalizedFilePath(rule.value)
         case .role:
             return window.role == rule.value
         case .subrole:
             return window.subrole == rule.value
         }
+    }
+
+    private static func normalizedFilePath(_ value: String?) -> String? {
+        guard let value, !value.isEmpty else { return nil }
+        let path: String
+        if let url = URL(string: value), url.isFileURL {
+            path = url.path
+        } else {
+            path = value
+        }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private static func normalizedURLString(_ value: String?) -> String? {
+        guard let value, var components = URLComponents(string: value) else { return value }
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        if (components.scheme == "http" && components.port == 80) ||
+            (components.scheme == "https" && components.port == 443) {
+            components.port = nil
+        }
+        return components.string
     }
 }

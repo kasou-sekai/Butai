@@ -102,7 +102,7 @@ private struct MenuBarContent: View {
         }
         .disabled(model.currentPreset == nil || model.isPresetRunning)
         Button("保存当前状态到预设") {
-            model.captureCurrentWindowsAsPreset()
+            Task { await model.captureCurrentWindowsAsPreset() }
         }
         .disabled(model.isPresetRunning)
         Divider()

@@ -3,7 +3,10 @@ import Foundation
 public actor ConfigurationRepository {
     public enum RepositoryError: Error, Equatable {
         case unsupportedSchema(Int)
+        case configurationTooLarge(Int)
     }
+
+    private static let maximumConfigurationBytes = 10 * 1_024 * 1_024
 
     public let configurationURL: URL
     public let backupURL: URL
@@ -44,27 +47,49 @@ public actor ConfigurationRepository {
         }
 
         let directory = configurationURL.deletingLastPathComponent()
-        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-        if fileManager.fileExists(atPath: configurationURL.path) {
-            if fileManager.fileExists(atPath: backupURL.path) {
-                try fileManager.removeItem(at: backupURL)
-            }
-            try fileManager.copyItem(at: configurationURL, to: backupURL)
+        try fileManager.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        if fileManager.fileExists(atPath: configurationURL.path),
+           let previousData = try? checkedData(contentsOf: configurationURL) {
+            try previousData.write(to: backupURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
         }
 
         let data = try encoder.encode(configuration)
+        guard data.count <= Self.maximumConfigurationBytes else {
+            throw RepositoryError.configurationTooLarge(data.count)
+        }
         try data.write(to: configurationURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configurationURL.path)
 
         if !fileManager.fileExists(atPath: backupURL.path) {
             try data.write(to: backupURL, options: [.atomic, .completeFileProtectionUnlessOpen])
+            try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: backupURL.path)
         }
     }
 
     private func decode(_ url: URL) throws -> ButaiConfiguration {
-        let configuration = try decoder.decode(ButaiConfiguration.self, from: Data(contentsOf: url))
+        let configuration = try decoder.decode(ButaiConfiguration.self, from: checkedData(contentsOf: url))
         guard configuration.schemaVersion == 1 else {
             throw RepositoryError.unsupportedSchema(configuration.schemaVersion)
         }
         return configuration
+    }
+
+    private func checkedData(contentsOf url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+        guard values.isRegularFile == true else { throw CocoaError(.fileReadInvalidFileName) }
+        if let size = values.fileSize, size > Self.maximumConfigurationBytes {
+            throw RepositoryError.configurationTooLarge(size)
+        }
+        let data = try Data(contentsOf: url, options: .mappedIfSafe)
+        guard data.count <= Self.maximumConfigurationBytes else {
+            throw RepositoryError.configurationTooLarge(data.count)
+        }
+        return data
     }
 }
