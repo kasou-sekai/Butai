@@ -187,9 +187,7 @@ final class AppModel: ObservableObject {
         transientMessage = nil
         pendingTargetOrder = workspace.order
         // Give OverlayController and WindowServer one frame to order the
-        // cross-Space panels out before a direct Space activation. Without
-        // this handoff the old panel surface can be captured into the menu bar
-        // on the destination Space as a short-lived afterimage.
+        // cross-Space panels out before posting the first Space chord.
         try? await Task.sleep(for: .milliseconds(50))
         do {
             try await navigator.navigate(
@@ -212,7 +210,7 @@ final class AppModel: ObservableObject {
             transientMessage = "桌面切换需要辅助功能权限。请在系统设置中开启 Butai，返回后再次点击“切换”。"
         } catch SpaceNavigationError.timedOut {
             pendingTargetOrder = nil
-            transientMessage = "WindowServer 没有响应桌面切换手势，请松开鼠标或触控板后重试。"
+            transientMessage = "macOS 没有响应桌面切换快捷键。请重试，或检查“键盘快捷键 → Mission Control”中的左右空间快捷键。"
         } catch SpaceNavigationError.mappingUnreliable {
             pendingTargetOrder = nil
             transientMessage = "桌面顺序正在变化，Butai 已停止切换以避免进入错误桌面。请稍后重试。"
