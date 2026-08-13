@@ -14,10 +14,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private let popupPanel: NSPanel
     private var cancellables = Set<AnyCancellable>()
     private var collapseTask: Task<Void, Never>?
+    private var spaceRepairTask: Task<Void, Never>?
     private var expanded = false
     private var anchorHovered = false
     private var popupHovered = false
     private var isPositioningProgrammatically = false
+    private var wasHiddenForFullscreen = false
+
+    private static let allSpacesBehavior: NSWindow.CollectionBehavior = [
+        .canJoinAllSpaces,
+        .stationary,
+        .ignoresCycle
+    ]
 
     init(model: AppModel) {
         self.model = model
@@ -65,6 +73,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 self?.refresh()
             }
             .store(in: &cancellables)
+
+        model.$pendingTargetOrder
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] pendingTargetOrder in
+                guard let self else { return }
+                if pendingTargetOrder == nil {
+                    self.reattachPanelsToAllSpaces()
+                }
+                self.refresh()
+            }
+            .store(in: &cancellables)
     }
 
     func show() {
@@ -74,6 +94,20 @@ final class OverlayController: NSObject, NSWindowDelegate {
     func reposition() {
         positionPanel()
         if expanded { positionPopupPanel() }
+    }
+
+    func activeSpaceDidChange() {
+        // WindowServer can acknowledge the Space notification before it has
+        // finished rebuilding cross-Space window membership. Repair on the
+        // next stable frame instead of repeatedly ordering the panel during
+        // the transition animation.
+        spaceRepairTask?.cancel()
+        spaceRepairTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(120))
+            guard !Task.isCancelled, let self else { return }
+            self.reattachPanelsToAllSpaces()
+            self.refresh()
+        }
     }
 
     private static func makePanel() -> NSPanel {
@@ -92,7 +126,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         target.hasShadow = false
         target.hidesOnDeactivate = false
         target.isMovableByWindowBackground = false
-        target.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
+        target.collectionBehavior = Self.allSpacesBehavior
     }
 
     private func anchorHoverChanged(_ hovering: Bool) {
@@ -183,17 +217,40 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     private func refresh() {
-        if model.configuration.settings.overlayVisible && !model.isCurrentSpaceFullscreen {
+        if model.configuration.settings.overlayVisible,
+           !model.isCurrentSpaceFullscreen,
+           model.pendingTargetOrder == nil {
+            if wasHiddenForFullscreen {
+                reattachPanelsToAllSpaces()
+                wasHiddenForFullscreen = false
+            }
             positionPanel()
             panel.orderFrontRegardless()
             if expanded { positionPopupPanel() }
         } else {
+            if model.isCurrentSpaceFullscreen {
+                wasHiddenForFullscreen = true
+            }
             expanded = false
             anchorHovered = false
             popupHovered = false
             panel.orderOut(nil)
             hidePopupPanel(immediately: true)
         }
+    }
+
+    private func reattachPanelsToAllSpaces() {
+        // Reapplying canJoinAllSpaces makes WindowServer rebuild the panels'
+        // cross-Space membership. Ordering them out first is important: a
+        // visible stationary panel can otherwise remain attached only to the
+        // Space that was active when its behavior changed.
+        panel.orderOut(nil)
+        popupPanel.orderOut(nil)
+        let detachedBehavior: NSWindow.CollectionBehavior = [.stationary, .ignoresCycle]
+        panel.collectionBehavior = detachedBehavior
+        popupPanel.collectionBehavior = detachedBehavior
+        panel.collectionBehavior = Self.allSpacesBehavior
+        popupPanel.collectionBehavior = Self.allSpacesBehavior
     }
 
     private func preferredCollapsedSize() -> NSSize {

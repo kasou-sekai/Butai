@@ -14,7 +14,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.setActivationPolicy(.accessory)
         overlayController = OverlayController(model: model)
         spaceObserver = SpaceObserver(
-            onSpaceChange: { [weak model = model] in model?.spaceDidChange() },
+            onSpaceChange: { [weak self] in
+                self?.model.spaceDidChange()
+                self?.overlayController?.activeSpaceDidChange()
+            },
             onTopologyPoll: { [weak model = model] in model?.refreshSystemSpaceTopology() }
         )
         overlayController?.show()

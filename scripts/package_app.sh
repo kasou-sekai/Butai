@@ -51,7 +51,15 @@ cp "${PROJECT_DIR}/Packaging/Info.plist" "${APP_PATH}/Contents/Info.plist"
 cp "${BIN_DIR}/Butai" "${APP_PATH}/Contents/MacOS/Butai"
 chmod 755 "${APP_PATH}/Contents/MacOS/Butai"
 
-codesign --force --sign - --timestamp=none "${APP_PATH}"
+# Keep the designated requirement stable across local builds. A plain ad-hoc
+# signature defaults to a content hash, which makes macOS invalidate Butai's
+# Accessibility permission after every update.
+codesign \
+    --force \
+    --sign - \
+    --timestamp=none \
+    --requirements '=designated => identifier "com.butai.app"' \
+    "${APP_PATH}"
 ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${ZIP_PATH}"
 
 plutil -lint "${APP_PATH}/Contents/Info.plist"
