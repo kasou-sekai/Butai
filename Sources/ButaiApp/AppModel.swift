@@ -50,6 +50,28 @@ final class AppModel: ObservableObject {
 
     var displayWorkspace: Workspace? { currentWorkspace ?? workspaces.first }
 
+    var automaticOverlayWidth: Double {
+        let name = displayWorkspace?.name ?? "未校准"
+        var width = ceil((name as NSString).size(
+            withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
+        ).width)
+        if let order = displayWorkspace?.order {
+            width += ceil((" · \(order)" as NSString).size(
+                withAttributes: [.font: NSFont.systemFont(ofSize: 13)]
+            ).width) + 4
+        }
+        if !mappingIsReliable { width += 18 }
+        return width + 16
+    }
+
+    var automaticOverlayHeight: Double {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else {
+            return NSStatusBar.system.thickness
+        }
+        let reservedTopHeight = screen.frame.maxY - screen.visibleFrame.maxY
+        return max(reservedTopHeight, NSStatusBar.system.thickness)
+    }
+
     var currentPreset: Preset? { currentWorkspace?.presets.first }
 
     var adapterHealth: [AdapterHealth] { presetEngine.adapterHealth }
@@ -249,8 +271,28 @@ final class AppModel: ObservableObject {
     }
 
     func setOverlayOffsets(horizontal: Double, vertical: Double) {
-        configuration.settings.overlayHorizontalOffset = horizontal
-        configuration.settings.overlayVerticalOffset = vertical
+        configuration.settings.overlayHorizontalOffset = min(max(horizontal, -10_000), 10_000)
+        configuration.settings.overlayVerticalOffset = min(max(vertical, -10_000), 10_000)
+        persist()
+    }
+
+    func setOverlayHorizontalOffset(_ offset: Double) {
+        configuration.settings.overlayHorizontalOffset = min(max(offset, -10_000), 10_000)
+        persist()
+    }
+
+    func setOverlayVerticalOffset(_ offset: Double) {
+        configuration.settings.overlayVerticalOffset = min(max(offset, -10_000), 10_000)
+        persist()
+    }
+
+    func setOverlayWidth(_ width: Double?) {
+        configuration.settings.overlayWidth = width.map { min(max($0, 52), 4_000) }
+        persist()
+    }
+
+    func setOverlayHeight(_ height: Double?) {
+        configuration.settings.overlayHeight = height.map { min(max($0, 16), 240) }
         persist()
     }
 

@@ -58,6 +58,7 @@ struct SettingsView: View {
             }
         }
         .frame(minWidth: 760, minHeight: 500)
+        .background(SettingsWindowConfigurator())
     }
 
     private func icon(for section: Section) -> String {
@@ -67,6 +68,37 @@ struct SettingsView: View {
         case .overlay: "menubar.rectangle"
         case .permissions: "checkmark.shield"
         case .about: "info.circle"
+        }
+    }
+}
+
+private struct SettingsWindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        NSView(frame: .zero)
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let window = nsView.window else {
+            DispatchQueue.main.async {
+                configure(nsView.window)
+            }
+            return
+        }
+        configure(window)
+    }
+
+    private func configure(_ window: NSWindow?) {
+        guard let window else { return }
+        window.level = .floating
+        window.hidesOnDeactivate = false
+        window.collectionBehavior.insert(.moveToActiveSpace)
+        if !NSApplication.shared.isActive {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+        if !window.isKeyWindow {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderFrontRegardless()
         }
     }
 }
@@ -113,11 +145,6 @@ private struct PresetSettingsView: View {
                 }
                 .pickerStyle(.menu)
 
-                if !isCurrentWorkspace {
-                    Label("补全和恢复只能对当前所在工作区执行。", systemImage: "info.circle")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
             }
 
             Section("保存与执行") {
@@ -139,9 +166,6 @@ private struct PresetSettingsView: View {
 
                     if model.isPresetRunning { ProgressView().controlSize(.small) }
                 }
-                Text("保存操作会用当前桌面可见的普通窗口替换该工作区的默认预设；不会关闭任何窗口。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("预设项目") {
@@ -183,8 +207,7 @@ private struct PresetSettingsView: View {
                 } else {
                     ContentUnavailableView(
                         "尚无预设项目",
-                        systemImage: "macwindow.badge.plus",
-                        description: Text("从当前窗口保存，或手动添加应用和资源。")
+                        systemImage: "macwindow.badge.plus"
                     )
                     .frame(minHeight: 160)
                 }
@@ -229,9 +252,6 @@ private struct PresetSettingsView: View {
                             .disabled(workspaceID == nil || edgeURLsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                         }
                         HStack {
-                            Text("Finder 和 VS Code 使用上方“添加项目”；Edge 支持新窗口、多 URL 和 Profile。")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
                             Spacer()
                             Button("添加 ChatGPT（实验性）") {
                                 guard let workspaceID else { return }
@@ -271,8 +291,6 @@ private struct PresetSettingsView: View {
                 Task { await model.captureCurrentWindowsAsPreset() }
             }
             Button("取消", role: .cancel) {}
-        } message: {
-            Text("现有预设项目将被当前桌面上的可见普通窗口替换。此操作不会移动或关闭窗口。")
         }
         .fileImporter(
             isPresented: Binding(
@@ -332,10 +350,6 @@ private struct WorkspaceSettingsView: View {
         Form {
             if model.needsInitialSetup {
                 Section {
-                    Label("先让 Butai 与你的普通桌面数量保持一致，然后标记当前所在桌面。", systemImage: "1.circle.fill")
-                        .font(.headline)
-                    Text("macOS 的公开 API 不提供普通桌面总数，因此 Butai 不能可靠地自动读取；这里只需确认一次，之后仍可随时修改。")
-                        .foregroundStyle(.secondary)
                     Button("完成初始设置") { model.completeInitialSetup() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!model.mappingIsReliable)
@@ -351,9 +365,6 @@ private struct WorkspaceSettingsView: View {
                         "当前所在桌面",
                         value: model.currentWorkspace.map { "桌面 \($0.order) · \($0.name)" } ?? "全屏或不支持的 Space"
                     )
-                    Label("工作区数量和顺序跟随 Mission Control。", systemImage: "arrow.triangle.2.circlepath")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                 } else {
                     Picker("普通桌面数量", selection: Binding(
                         get: { model.workspaces.count },
@@ -422,10 +433,6 @@ private struct WorkspaceSettingsView: View {
                 }
             }
 
-            Section("关于桌面映射") {
-                Text("Butai 在运行期间读取 WindowServer 的 Space 拓扑，私有 Space ID 不会写入配置文件。")
-                    .foregroundStyle(.secondary)
-            }
         }
         .formStyle(.grouped)
         .navigationTitle("工作区")
@@ -441,14 +448,77 @@ private struct OverlaySettingsView: View {
                 get: { model.configuration.settings.overlayVisible },
                 set: model.setOverlayVisible
             ))
-            Text("浮窗会加入所有普通 Spaces，默认不抢键盘焦点。可以直接拖动浮窗微调位置。")
-                .foregroundStyle(.secondary)
-            LabeledContent("水平偏移", value: "\(Int(model.configuration.settings.overlayHorizontalOffset)) pt")
-            LabeledContent("垂直偏移", value: "\(Int(model.configuration.settings.overlayVerticalOffset)) pt")
+            overlayNumberField(
+                "水平偏移",
+                value: Binding(
+                    get: { model.configuration.settings.overlayHorizontalOffset },
+                    set: model.setOverlayHorizontalOffset
+                )
+            )
+            overlayNumberField(
+                "顶部偏移",
+                value: Binding(
+                    get: { model.configuration.settings.overlayVerticalOffset },
+                    set: model.setOverlayVerticalOffset
+                )
+            )
+            overlaySizeField(
+                "宽度",
+                value: Binding(
+                    get: { model.configuration.settings.overlayWidth ?? model.automaticOverlayWidth },
+                    set: { model.setOverlayWidth($0) }
+                ),
+                automatic: Binding(
+                    get: { model.configuration.settings.overlayWidth == nil },
+                    set: { model.setOverlayWidth($0 ? nil : model.automaticOverlayWidth) }
+                )
+            )
+            overlaySizeField(
+                "高度",
+                value: Binding(
+                    get: { model.configuration.settings.overlayHeight ?? model.automaticOverlayHeight },
+                    set: { model.setOverlayHeight($0) }
+                ),
+                automatic: Binding(
+                    get: { model.configuration.settings.overlayHeight == nil },
+                    set: { model.setOverlayHeight($0 ? nil : model.automaticOverlayHeight) }
+                )
+            )
             Button("恢复默认位置") { model.resetOverlayPosition() }
         }
         .formStyle(.grouped)
         .navigationTitle("浮窗")
+    }
+
+    private func overlayNumberField(_ title: String, value: Binding<Double>) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 4) {
+                TextField(title, value: value, format: .number.precision(.fractionLength(0)))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 78)
+                Text("pt")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func overlaySizeField(
+        _ title: String,
+        value: Binding<Double>,
+        automatic: Binding<Bool>
+    ) -> some View {
+        LabeledContent(title) {
+            HStack(spacing: 8) {
+                TextField(title, value: value, format: .number.precision(.fractionLength(0)))
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 78)
+                    .disabled(automatic.wrappedValue)
+                Text("pt")
+                    .foregroundStyle(.secondary)
+                Toggle("自动", isOn: automatic)
+                    .toggleStyle(.checkbox)
+            }
+        }
     }
 }
 
@@ -529,9 +599,6 @@ private struct AboutView: View {
         VStack(spacing: 16) {
             Image(systemName: "theatermasks.fill").font(.system(size: 64))
             Text("Butai").font(.largeTitle.bold())
-            Text("Set the stage for your work.")
-            Text("首版技术预览 · 配置仅保存在本机")
-                .font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }

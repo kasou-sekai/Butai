@@ -217,6 +217,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var overlayVisible: Bool
     public var overlayHorizontalOffset: Double
     public var overlayVerticalOffset: Double
+    public var overlayWidth: Double?
+    public var overlayHeight: Double?
     public var feedbackDuration: Double
     public var capsLockShortcutsEnabled: Bool
     public var switchingAction: SwitchingAction
@@ -225,6 +227,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         overlayVisible: Bool = true,
         overlayHorizontalOffset: Double = 0,
         overlayVerticalOffset: Double = 0,
+        overlayWidth: Double? = nil,
+        overlayHeight: Double? = nil,
         feedbackDuration: Double = 0.9,
         capsLockShortcutsEnabled: Bool = false,
         switchingAction: SwitchingAction = .nothing
@@ -232,6 +236,8 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.overlayVisible = overlayVisible
         self.overlayHorizontalOffset = overlayHorizontalOffset
         self.overlayVerticalOffset = overlayVerticalOffset
+        self.overlayWidth = overlayWidth
+        self.overlayHeight = overlayHeight
         self.feedbackDuration = feedbackDuration
         self.capsLockShortcutsEnabled = capsLockShortcutsEnabled
         self.switchingAction = switchingAction

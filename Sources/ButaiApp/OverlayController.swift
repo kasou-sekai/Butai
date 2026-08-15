@@ -261,7 +261,20 @@ final class OverlayController: NSObject, NSWindowDelegate {
         }
         if !model.mappingIsReliable { width += 18 }
         let screen = NSScreen.main ?? NSScreen.screens.first
-        return NSSize(width: ceil(width + 16), height: statusBarHeight(for: screen))
+        let automaticWidth = ceil(width + 16)
+        let configuredWidth = CGFloat(
+            model.configuration.settings.overlayWidth ?? Double(automaticWidth)
+        )
+        let configuredHeight = CGFloat(
+            model.configuration.settings.overlayHeight
+                ?? Double(statusBarHeight(for: screen))
+        )
+        let maximumWidth = screen?.frame.width ?? configuredWidth
+        let maximumHeight = screen?.frame.height ?? configuredHeight
+        return NSSize(
+            width: min(max(configuredWidth, 52), maximumWidth),
+            height: min(max(configuredHeight, 16), maximumHeight)
+        )
     }
 
     private func preferredPopupSize() -> NSSize {
@@ -298,7 +311,14 @@ final class OverlayController: NSObject, NSWindowDelegate {
             + model.configuration.settings.overlayHorizontalOffset
         let origin = NSPoint(
             x: min(max(desiredX, screenFrame.minX), screenFrame.maxX - size.width),
-            y: screenFrame.maxY - size.height
+            y: min(
+                max(
+                    screenFrame.maxY - size.height
+                        - model.configuration.settings.overlayVerticalOffset,
+                    screenFrame.minY
+                ),
+                screenFrame.maxY - size.height
+            )
         )
         isPositioningProgrammatically = true
         panel.setFrame(NSRect(origin: origin, size: size), display: true)
@@ -325,7 +345,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard !isPositioningProgrammatically,
               let screen = panel.screen ?? NSScreen.main else { return }
         let horizontal = panel.frame.midX - screen.frame.midX
-        model.setOverlayOffsets(horizontal: horizontal, vertical: 0)
+        model.setOverlayHorizontalOffset(horizontal)
         if expanded { positionPopupPanel() }
     }
 }

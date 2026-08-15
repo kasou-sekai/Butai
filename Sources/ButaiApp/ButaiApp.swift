@@ -57,6 +57,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+@MainActor
+enum SettingsWindowPresenter {
+    static func show() {
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        _ = NSApplication.shared.sendAction(
+            Selector(("showSettingsWindow:")),
+            to: nil,
+            from: nil
+        )
+    }
+}
+
 @main
 struct ButaiApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -119,7 +131,9 @@ private struct MenuBarContent: View {
                 }
             }
         }
-        SettingsLink { Text("设置…") }
+        Button("设置…") {
+            SettingsWindowPresenter.show()
+        }
         Divider()
         Button("退出 Butai") { NSApplication.shared.terminate(nil) }
     }
