@@ -210,7 +210,7 @@ final class AppModel: ObservableObject {
             transientMessage = "桌面切换需要辅助功能权限。请在系统设置中开启 Butai，返回后再次点击“切换”。"
         } catch SpaceNavigationError.timedOut {
             pendingTargetOrder = nil
-            transientMessage = "macOS 没有响应桌面切换快捷键。请重试，或检查“键盘快捷键 → Mission Control”中的左右空间快捷键。"
+            transientMessage = "macOS 没有响应目标桌面快捷键。请重试，或检查“键盘快捷键 → Mission Control”中的“切换到桌面”快捷键。"
         } catch SpaceNavigationError.mappingUnreliable {
             pendingTargetOrder = nil
             transientMessage = "桌面顺序正在变化，Butai 已停止切换以避免进入错误桌面。请稍后重试。"
