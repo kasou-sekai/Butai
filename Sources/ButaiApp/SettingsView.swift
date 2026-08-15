@@ -126,7 +126,7 @@ private struct PresetSettingsView: View {
                     set: { selectedWorkspaceID = $0 }
                 )) {
                     ForEach(model.workspaces) { workspace in
-                        Text("(workspace.order). (workspace.name)").tag(Optional(workspace.id))
+                        Text("\(workspace.order). \(workspace.name)").tag(Optional(workspace.id))
                     }
                 }
                 .pickerStyle(.menu)
@@ -135,7 +135,7 @@ private struct PresetSettingsView: View {
             Section("预设") {
                 if let preset {
                     LabeledContent("名称", value: preset.name)
-                    LabeledContent("项目数", value: "(preset.items.count)")
+                    LabeledContent("项目数", value: "\(preset.items.count)")
                 } else {
                     ContentUnavailableView("尚未创建预设", systemImage: "rectangle.badge.plus")
                     Button("新建空白预设", systemImage: "plus") {
@@ -211,7 +211,7 @@ private struct PresetSettingsView: View {
                                     Image(systemName: "trash")
                                 }
                                 .buttonStyle(.borderless)
-                                .accessibilityLabel("删除 (item.displayName)")
+                                .accessibilityLabel("删除 \(item.displayName)")
                             }
                         }
                         .onDelete { model.deletePresetItems(workspaceID: workspaceID, at: $0) }

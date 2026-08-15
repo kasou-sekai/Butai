@@ -86,10 +86,6 @@ private struct MenuBarContent: View {
             Text("当前工作区未确认")
         }
 
-        if let message = model.transientMessage {
-            Text(message)
-        }
-
         Menu("切换工作区") {
             ForEach(model.workspaces) { workspace in
                 Button("\(workspace.order). \(workspace.name)") {
@@ -112,13 +108,6 @@ private struct MenuBarContent: View {
         }
         .disabled(model.isPresetRunning)
         Divider()
-        Menu("将当前桌面标记为") {
-            ForEach(model.workspaces) { workspace in
-                Button("\(workspace.order). \(workspace.name)") {
-                    model.calibrateCurrent(as: workspace.id)
-                }
-            }
-        }
         SettingsLink { Text("设置…") }
         Divider()
         Button("退出 Butai") { NSApplication.shared.terminate(nil) }
