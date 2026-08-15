@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct SettingsView: View {
     enum Section: String, CaseIterable, Identifiable {
         case workspaces = "工作区"
-        case presets = "预设与窗口"
+        case presets = "预设"
         case overlay = "浮窗"
         case permissions = "权限与诊断"
         case about = "关于"
@@ -30,45 +30,30 @@ struct SettingsView: View {
                 .background(.orange.opacity(0.12))
             }
 
-            NavigationSplitView {
-                List {
-                    ForEach(Section.allCases) { section in
-                        Button {
-                            selection = section
-                        } label: {
-                            HStack {
-                                Label(section.rawValue, systemImage: icon(for: section))
-                                Spacer()
-                            }
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                        .listRowBackground(selection == section ? Color.accentColor.opacity(0.16) : Color.clear)
-                    }
-                }
-                .navigationSplitViewColumnWidth(180)
-            } detail: {
-                switch selection ?? .workspaces {
-                case .workspaces: WorkspaceSettingsView()
-                case .presets: PresetSettingsView()
-                case .overlay: OverlaySettingsView()
-                case .permissions: PermissionsView()
-                case .about: AboutView()
-                }
+            TabView(selection: Binding(
+                get: { selection ?? .workspaces },
+                set: { selection = $0 }
+            )) {
+                WorkspaceSettingsView()
+                    .tabItem { Label("工作区", systemImage: "rectangle.3.group") }
+                    .tag(Section.workspaces)
+                PresetSettingsView()
+                    .tabItem { Label("预设", systemImage: "macwindow.on.rectangle") }
+                    .tag(Section.presets)
+                OverlaySettingsView()
+                    .tabItem { Label("浮窗", systemImage: "menubar.rectangle") }
+                    .tag(Section.overlay)
+                PermissionsView()
+                    .tabItem { Label("权限", systemImage: "checkmark.shield") }
+                    .tag(Section.permissions)
+                AboutView()
+                    .tabItem { Label("关于", systemImage: "info.circle") }
+                    .tag(Section.about)
             }
         }
+        .padding(20)
         .frame(minWidth: 760, minHeight: 500)
         .background(SettingsWindowConfigurator())
-    }
-
-    private func icon(for section: Section) -> String {
-        switch section {
-        case .workspaces: "rectangle.3.group"
-        case .presets: "macwindow.on.rectangle"
-        case .overlay: "menubar.rectangle"
-        case .permissions: "checkmark.shield"
-        case .about: "info.circle"
-        }
     }
 }
 
@@ -113,6 +98,7 @@ private struct PresetSettingsView: View {
     @State private var edgeURLsText = ""
     @State private var edgeProfile = ""
     @State private var confirmCapture = false
+    @State private var confirmDelete = false
 
     private var workspaceID: UUID? {
         selectedWorkspaceID ?? model.currentWorkspace?.id ?? model.workspaces.first?.id
@@ -134,27 +120,41 @@ private struct PresetSettingsView: View {
 
     var body: some View {
         Form {
-            Section("目标工作区") {
+            Section("工作区") {
                 Picker("工作区", selection: Binding(
                     get: { workspaceID },
                     set: { selectedWorkspaceID = $0 }
                 )) {
                     ForEach(model.workspaces) { workspace in
-                        Text("\(workspace.order). \(workspace.name)").tag(Optional(workspace.id))
+                        Text("(workspace.order). (workspace.name)").tag(Optional(workspace.id))
                     }
                 }
                 .pickerStyle(.menu)
-
             }
 
-            Section("保存与执行") {
+            Section("预设") {
+                if let preset {
+                    LabeledContent("名称", value: preset.name)
+                    LabeledContent("项目数", value: "(preset.items.count)")
+                } else {
+                    ContentUnavailableView("尚未创建预设", systemImage: "rectangle.badge.plus")
+                    Button("新建空白预设", systemImage: "plus") {
+                        guard let workspaceID else { return }
+                        model.createPreset(workspaceID: workspaceID)
+                    }
+                    .disabled(workspaceID == nil)
+                }
+
                 HStack {
-                    Button("从当前窗口保存", systemImage: "camera.viewfinder") {
+                    Button(
+                        preset == nil ? "从当前窗口创建" : "用当前窗口替换",
+                        systemImage: "camera.viewfinder"
+                    ) {
                         confirmCapture = true
                     }
                     .disabled(!isCurrentWorkspace || model.isPresetRunning)
 
-                    Button("补全预设", systemImage: "plus.rectangle.on.rectangle") {
+                    Button("补全", systemImage: "plus.rectangle.on.rectangle") {
                         Task { await model.completeCurrentPreset() }
                     }
                     .disabled(!isCurrentWorkspace || preset == nil || model.isPresetRunning)
@@ -164,20 +164,33 @@ private struct PresetSettingsView: View {
                     }
                     .disabled(!isCurrentWorkspace || preset == nil || model.isPresetRunning)
 
-                    if model.isPresetRunning { ProgressView().controlSize(.small) }
+                    Spacer()
+
+                    Button("删除预设", systemImage: "trash", role: .destructive) {
+                        confirmDelete = true
+                    }
+                    .disabled(preset == nil)
+                }
+
+                if model.isPresetRunning {
+                    ProgressView()
+                        .controlSize(.small)
                 }
             }
 
-            Section("预设项目") {
-                if let preset, !preset.items.isEmpty, let workspaceID {
-                    List {
+            if let preset, let workspaceID {
+                Section("预设项目") {
+                    if preset.items.isEmpty {
+                        ContentUnavailableView("预设为空", systemImage: "tray")
+                    } else {
                         ForEach(preset.items.sorted(by: { $0.sortOrder < $1.sortOrder })) { item in
                             HStack(spacing: 10) {
                                 Image(systemName: icon(for: item.kind))
                                     .frame(width: 22)
                                     .foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(item.displayName).lineLimit(1)
+                                    Text(item.displayName)
+                                        .lineLimit(1)
                                     Text(detail(for: item))
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
@@ -185,81 +198,75 @@ private struct PresetSettingsView: View {
                                 }
                                 Spacer()
                                 if item.windowLayout != nil {
-                                    Label("布局", systemImage: "rectangle.dashed")
-                                        .labelStyle(.iconOnly)
+                                    Image(systemName: "rectangle.dashed")
                                         .foregroundStyle(.secondary)
                                         .help("已保存窗口布局")
                                 }
-                                Toggle("启用", isOn: Binding(
-                                    get: { item.enabled },
-                                    set: { model.setPresetItemEnabled(
+                                Button(role: .destructive) {
+                                    model.deletePresetItem(
                                         workspaceID: workspaceID,
-                                        itemID: item.id,
-                                        enabled: $0
-                                    ) }
-                                ))
-                                .labelsHidden()
+                                        itemID: item.id
+                                    )
+                                } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.borderless)
+                                .accessibilityLabel("删除 (item.displayName)")
                             }
                         }
                         .onDelete { model.deletePresetItems(workspaceID: workspaceID, at: $0) }
                     }
-                    .frame(minHeight: 210)
-                } else {
-                    ContentUnavailableView(
-                        "尚无预设项目",
-                        systemImage: "macwindow.badge.plus"
-                    )
-                    .frame(minHeight: 160)
                 }
 
-                HStack {
-                    Menu("添加项目", systemImage: "plus") {
-                        Button("应用…") { importKind = .application }
-                        Button("文件…") { importKind = .file }
-                        Button("Finder 文件夹…") { importKind = .folder }
-                        Divider()
-                        Button("VS Code 文件夹…") { importKind = .vscodeFolder }
-                        Button("VS Code 工作区…") { importKind = .vscodeWorkspace }
+                Section("添加项目") {
+                    HStack {
+                        Menu("添加项目", systemImage: "plus") {
+                            Button("应用…") { importKind = .application }
+                            Button("文件…") { importKind = .file }
+                            Button("Finder 文件夹…") { importKind = .folder }
+                            Divider()
+                            Button("VS Code 文件夹…") { importKind = .vscodeFolder }
+                            Button("VS Code 工作区…") { importKind = .vscodeWorkspace }
+                        }
+
+                        TextField("URL", text: $urlText)
+                            .textFieldStyle(.roundedBorder)
+                        Button("添加 URL") {
+                            model.addPresetURL(workspaceID: workspaceID, value: urlText)
+                            urlText = ""
+                        }
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    HStack {
+                        TextField("Edge URL（可多个）", text: $edgeURLsText)
+                            .textFieldStyle(.roundedBorder)
+                        TextField("Profile", text: $edgeProfile)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 150)
+                        Button("添加 Edge") {
+                            model.addEdgeWindow(
+                                workspaceID: workspaceID,
+                                urlsText: edgeURLsText,
+                                profile: edgeProfile
+                            )
+                            edgeURLsText = ""
+                            edgeProfile = ""
+                        }
+                        .disabled(edgeURLsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    }
+
+                    Button("添加 ChatGPT", systemImage: "bubble.left.and.bubble.right") {
+                        model.addChatGPTWindow(workspaceID: workspaceID)
+                    }
+                }
+            } else {
+                Section("添加项目") {
+                    Button("新建空白预设", systemImage: "plus") {
+                        guard let workspaceID else { return }
+                        model.createPreset(workspaceID: workspaceID)
                     }
                     .disabled(workspaceID == nil)
-
-                    TextField("https://example.com", text: $urlText)
-                        .textFieldStyle(.roundedBorder)
-                    Button("添加 URL") {
-                        guard let workspaceID else { return }
-                        model.addPresetURL(workspaceID: workspaceID, value: urlText)
-                        urlText = ""
-                    }
-                    .disabled(workspaceID == nil || urlText.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-
-                GroupBox("应用适配器") {
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            TextField("Edge URL；多个 URL 可换行或用逗号分隔", text: $edgeURLsText)
-                            TextField("Profile（可选，如 Default）", text: $edgeProfile)
-                                .frame(maxWidth: 190)
-                            Button("添加 Edge 窗口") {
-                                guard let workspaceID else { return }
-                                model.addEdgeWindow(
-                                    workspaceID: workspaceID,
-                                    urlsText: edgeURLsText,
-                                    profile: edgeProfile
-                                )
-                                edgeURLsText = ""
-                                edgeProfile = ""
-                            }
-                            .disabled(workspaceID == nil || edgeURLsText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                        }
-                        HStack {
-                            Spacer()
-                            Button("添加 ChatGPT（实验性）") {
-                                guard let workspaceID else { return }
-                                model.addChatGPTWindow(workspaceID: workspaceID)
-                            }
-                            .disabled(workspaceID == nil)
-                        }
-                    }
                 }
             }
 
@@ -272,7 +279,9 @@ private struct PresetSettingsView: View {
                                 .foregroundStyle(result.succeeded ? .green : .orange)
                             VStack(alignment: .leading) {
                                 Text(result.displayName)
-                                Text(result.message).font(.caption).foregroundStyle(.secondary)
+                                Text(result.message)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                     }
@@ -280,15 +289,30 @@ private struct PresetSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .navigationTitle("预设与窗口")
-        .onAppear { selectedWorkspaceID = model.currentWorkspace?.id ?? model.workspaces.first?.id }
+        .navigationTitle("预设")
+        .onAppear {
+            selectedWorkspaceID = model.currentWorkspace?.id ?? model.workspaces.first?.id
+        }
         .confirmationDialog(
-            "替换 \(workspace?.name ?? "当前工作区") 的预设？",
+            preset == nil
+                ? "从当前窗口创建 \(workspace?.name ?? "当前工作区") 的预设？"
+                : "替换 \(workspace?.name ?? "当前工作区") 的预设？",
             isPresented: $confirmCapture,
             titleVisibility: .visible
         ) {
-            Button("用当前窗口替换预设") {
+            Button(preset == nil ? "创建" : "替换") {
                 Task { await model.captureCurrentWindowsAsPreset() }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        .confirmationDialog(
+            "删除 \(workspace?.name ?? "当前工作区") 的预设？",
+            isPresented: $confirmDelete,
+            titleVisibility: .visible
+        ) {
+            Button("删除", role: .destructive) {
+                guard let workspaceID else { return }
+                model.deletePreset(workspaceID: workspaceID)
             }
             Button("取消", role: .cancel) {}
         }

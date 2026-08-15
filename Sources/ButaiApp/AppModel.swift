@@ -415,6 +415,32 @@ final class AppModel: ObservableObject {
         addPresetResource(workspaceID: workspaceID, kind: .url, url: url)
     }
 
+    func createPreset(workspaceID: UUID) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              configuration.workspaces[workspaceIndex].presets.isEmpty else {
+            return
+        }
+        let workspace = configuration.workspaces[workspaceIndex]
+        configuration.workspaces[workspaceIndex].presets = [
+            Preset(workspaceID: workspace.id, name: "(workspace.name)预设")
+        ]
+        configuration.workspaces[workspaceIndex].updatedAt = .now
+        transientMessage = "已为 (workspace.name) 新建空白预设。"
+        persist()
+    }
+
+    func deletePreset(workspaceID: UUID) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              !configuration.workspaces[workspaceIndex].presets.isEmpty else {
+            return
+        }
+        configuration.workspaces[workspaceIndex].presets.removeAll()
+        configuration.workspaces[workspaceIndex].updatedAt = .now
+        lastPresetReport = nil
+        transientMessage = "已删除 (configuration.workspaces[workspaceIndex].name) 的预设。"
+        persist()
+    }
+
     func addEdgeWindow(workspaceID: UUID, urlsText: String, profile: String) {
         let values = urlsText
             .split(whereSeparator: { $0.isNewline || $0 == "," })
@@ -515,6 +541,19 @@ final class AppModel: ObservableObject {
         guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
               !configuration.workspaces[workspaceIndex].presets.isEmpty else { return }
         configuration.workspaces[workspaceIndex].presets[0].items.remove(atOffsets: offsets)
+        for index in configuration.workspaces[workspaceIndex].presets[0].items.indices {
+            configuration.workspaces[workspaceIndex].presets[0].items[index].sortOrder = index
+        }
+        configuration.workspaces[workspaceIndex].presets[0].updatedAt = .now
+        persist()
+    }
+
+    func deletePresetItem(workspaceID: UUID, itemID: UUID) {
+        guard let workspaceIndex = workspaces.firstIndex(where: { $0.id == workspaceID }),
+              !configuration.workspaces[workspaceIndex].presets.isEmpty else {
+            return
+        }
+        configuration.workspaces[workspaceIndex].presets[0].items.removeAll { $0.id == itemID }
         for index in configuration.workspaces[workspaceIndex].presets[0].items.indices {
             configuration.workspaces[workspaceIndex].presets[0].items[index].sortOrder = index
         }
