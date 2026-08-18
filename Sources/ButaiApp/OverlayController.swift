@@ -15,14 +15,18 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var cancellables = Set<AnyCancellable>()
     private var collapseTask: Task<Void, Never>?
     private var spaceRepairTask: Task<Void, Never>?
+    private var revealHideTask: Task<Void, Never>?
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
     private var expanded = false
     private var anchorHovered = false
     private var popupHovered = false
+    private var fullscreenRevealed = false
     private var isPositioningProgrammatically = false
-    private var wasHiddenForFullscreen = false
 
     private static let allSpacesBehavior: NSWindow.CollectionBehavior = [
         .canJoinAllSpaces,
+        .fullScreenAuxiliary,
         .stationary,
         .ignoresCycle
     ]
@@ -85,6 +89,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
                 self.refresh()
             }
             .store(in: &cancellables)
+
+        installMouseMonitors()
     }
 
     func show() {
@@ -132,6 +138,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private func anchorHoverChanged(_ hovering: Bool) {
         anchorHovered = hovering
         if hovering {
+            cancelRevealHide()
             collapseTask?.cancel()
             setExpanded(true)
         } else {
@@ -142,6 +149,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private func popupHoverChanged(_ hovering: Bool) {
         popupHovered = hovering
         if hovering {
+            cancelRevealHide()
             collapseTask?.cancel()
         } else {
             scheduleCollapse()
@@ -160,10 +168,10 @@ final class OverlayController: NSObject, NSWindowDelegate {
 
     private func setExpanded(_ value: Bool) {
         guard value != expanded else { return }
-        guard !value || (model.configuration.settings.overlayVisible && !model.isCurrentSpaceFullscreen) else {
+        guard !value || overlayShouldBeVisible else {
             return
         }
-        guard !value || model.workspaces.contains(where: { $0.id != model.currentWorkspace?.id }) else {
+        guard !value || model.overlaySpaces.count > 1 else {
             return
         }
         expanded = value
@@ -217,26 +225,106 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     private func refresh() {
-        if model.configuration.settings.overlayVisible,
-           !model.isCurrentSpaceFullscreen,
-           model.pendingTargetOrder == nil {
-            if wasHiddenForFullscreen {
-                reattachPanelsToAllSpaces()
-                wasHiddenForFullscreen = false
-            }
+        if !model.isCurrentSpaceFullscreen {
+            fullscreenRevealed = false
+            cancelRevealHide()
+        }
+        if overlayShouldBeVisible {
             positionPanel()
             panel.orderFrontRegardless()
             if expanded { positionPopupPanel() }
         } else {
-            if model.isCurrentSpaceFullscreen {
-                wasHiddenForFullscreen = true
-            }
             expanded = false
             anchorHovered = false
             popupHovered = false
             panel.orderOut(nil)
             hidePopupPanel(immediately: true)
         }
+    }
+
+    private var overlayShouldBeVisible: Bool {
+        guard model.configuration.settings.overlayVisible,
+              model.pendingTargetOrder == nil else { return false }
+        guard model.isCurrentSpaceFullscreen else { return true }
+        switch model.configuration.settings.fullscreenOverlayMode ?? .always {
+        case .hidden:
+            return false
+        case .revealAtTop:
+            return fullscreenRevealed
+        case .always:
+            return true
+        }
+    }
+
+    private func installMouseMonitors() {
+        let events: NSEvent.EventTypeMask = [.mouseMoved, .leftMouseDragged]
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: events) { [weak self] _ in
+            Task { @MainActor in
+                self?.mouseLocationDidChange(NSEvent.mouseLocation)
+            }
+        }
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: events) { [weak self] event in
+            Task { @MainActor in
+                self?.mouseLocationDidChange(NSEvent.mouseLocation)
+            }
+            return event
+        }
+    }
+
+    private func mouseLocationDidChange(_ location: NSPoint) {
+        guard model.isCurrentSpaceFullscreen,
+              model.configuration.settings.overlayVisible,
+              (model.configuration.settings.fullscreenOverlayMode ?? .always) == .revealAtTop else {
+            return
+        }
+
+        if fullscreenHotRegion.contains(location) {
+            cancelRevealHide()
+            if !fullscreenRevealed {
+                fullscreenRevealed = true
+                refresh()
+            }
+            return
+        }
+
+        let overVisibleOverlay = panel.isVisible && panel.frame.insetBy(dx: -12, dy: -12).contains(location)
+            || popupPanel.isVisible && popupPanel.frame.insetBy(dx: -12, dy: -12).contains(location)
+        guard !overVisibleOverlay, !anchorHovered, !popupHovered else {
+            cancelRevealHide()
+            return
+        }
+        scheduleFullscreenRevealHide()
+    }
+
+    private var fullscreenHotRegion: NSRect {
+        guard let screen = NSScreen.main ?? NSScreen.screens.first else { return .zero }
+        let size = preferredCollapsedSize()
+        let desiredX = screen.frame.midX - size.width / 2
+            + model.configuration.settings.overlayHorizontalOffset
+        let clampedX = min(max(desiredX, screen.frame.minX), screen.frame.maxX - size.width)
+        return NSRect(
+            x: clampedX - 32,
+            y: screen.frame.maxY - 14,
+            width: size.width + 64,
+            height: 14
+        )
+    }
+
+    private func scheduleFullscreenRevealHide() {
+        guard fullscreenRevealed, revealHideTask == nil else { return }
+        revealHideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(320))
+            guard !Task.isCancelled, let self,
+                  !self.anchorHovered, !self.popupHovered else { return }
+            self.fullscreenRevealed = false
+            self.revealHideTask = nil
+            self.refresh()
+        }
+    }
+
+    private func cancelRevealHide() {
+        revealHideTask?.cancel()
+        revealHideTask = nil
     }
 
     private func reattachPanelsToAllSpaces() {
@@ -254,11 +342,11 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     private func preferredCollapsedSize() -> NSSize {
-        let name = model.displayWorkspace?.name ?? "未校准"
+        let currentItem = model.overlaySpaces.first(where: \.isCurrent)
+        let name = currentItem?.workspace?.name
+            ?? currentItem?.applicationName
+            ?? "未校准"
         var width = textWidth(name, font: .systemFont(ofSize: 13, weight: .semibold))
-        if let order = model.displayWorkspace?.order {
-            width += textWidth(" · \(order)", font: .systemFont(ofSize: 13)) + 4
-        }
         if !model.mappingIsReliable { width += 18 }
         let screen = NSScreen.main ?? NSScreen.screens.first
         let automaticWidth = ceil(width + 16)
@@ -278,12 +366,14 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     private func preferredPopupSize() -> NSSize {
-        let otherWorkspaces = model.workspaces.filter { $0.id != model.currentWorkspace?.id }
-        let itemWidths = otherWorkspaces.map { workspace in
-            textWidth(
-                "\(workspace.name) · \(workspace.order)",
+        let itemWidths = model.overlaySpaces.map { item in
+            let contentWidth = item.workspace.map {
+                textWidth($0.name, font: .systemFont(ofSize: 13, weight: .medium))
+            } ?? textWidth(
+                item.applicationName ?? "全屏应用",
                 font: .systemFont(ofSize: 13, weight: .medium)
-            ) + 24
+            )
+            return contentWidth + 24 + (item.isCurrent ? 18 : 0)
         }
         let width = max(
             52,
@@ -362,11 +452,14 @@ private struct OverlayAnchorView: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.yellow)
                 }
-                Text(model.displayWorkspace?.name ?? "未校准")
-                    .font(.system(size: 13, weight: .semibold))
-                    .lineLimit(1)
-                if let order = model.displayWorkspace?.order {
-                    Text("· \(order)").foregroundStyle(.secondary)
+                if let current = model.overlaySpaces.first(where: \.isCurrent), current.isFullscreen {
+                    Text(current.applicationName ?? "全屏应用")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                } else {
+                    Text(model.currentWorkspace?.name ?? "未校准")
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
                 }
             }
             .padding(.horizontal, 8)
@@ -392,22 +485,40 @@ private struct OverlayPopupView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            ForEach(model.workspaces.filter { $0.id != model.currentWorkspace?.id }) { workspace in
+            ForEach(model.overlaySpaces) { item in
                 Button {
+                    guard !item.isCurrent else { return }
                     onWorkspaceSelected()
-                    Task { await model.navigate(to: workspace) }
+                    Task { await model.navigate(to: item) }
                 } label: {
-                    Text("\(workspace.name) · \(workspace.order)")
-                        .font(.system(size: 13, weight: .medium))
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                    HStack(spacing: 5) {
+                        if item.isCurrent {
+                            Image(systemName: "location.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        if let workspace = item.workspace {
+                            Text(workspace.name)
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        } else {
+                            Text(item.applicationName ?? "全屏应用")
+                                .font(.system(size: 13, weight: .medium))
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                        }
+                    }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
                         .contentShape(Rectangle())
-                        .background(.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 7))
+                        .background(
+                            item.isCurrent ? Color.accentColor.opacity(0.2) : .white.opacity(0.1),
+                            in: RoundedRectangle(cornerRadius: 7)
+                        )
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("切换到 \(workspace.name)")
+                .accessibilityLabel(accessibilityLabel(for: item))
             }
         }
         .padding(.horizontal, 4)
@@ -419,6 +530,11 @@ private struct OverlayPopupView: View {
         )
         .onHover(perform: onHoverChanged)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("其他桌面")
+        .accessibilityLabel("桌面与全屏应用")
+    }
+
+    private func accessibilityLabel(for item: OverlaySpaceItem) -> String {
+        let name = item.workspace?.name ?? item.applicationName ?? "全屏应用"
+        return item.isCurrent ? "当前位置，\(name)" : "切换到 \(name)"
     }
 }

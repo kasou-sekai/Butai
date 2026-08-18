@@ -4,6 +4,16 @@ import Combine
 import Foundation
 import SwiftUI
 
+struct OverlaySpaceItem: Identifiable {
+    let id: Int
+    let workspace: Workspace?
+    let applicationBundleIdentifier: String?
+    let applicationName: String?
+    let isCurrent: Bool
+
+    var isFullscreen: Bool { workspace == nil }
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     @Published private(set) var configuration = ButaiConfiguration.initial()
@@ -40,6 +50,7 @@ final class AppModel: ObservableObject {
     var workspaces: [Workspace] { configuration.workspaces }
 
     var currentWorkspace: Workspace? {
+        guard !isCurrentSpaceFullscreen else { return nil }
         guard let id = configuration.calibration.currentWorkspaceID else { return nil }
         return workspaces.first { $0.id == id }
     }
@@ -50,18 +61,48 @@ final class AppModel: ObservableObject {
 
     var displayWorkspace: Workspace? { currentWorkspace ?? workspaces.first }
 
+    var overlaySpaces: [OverlaySpaceItem] {
+        guard let snapshot = lastSystemSpaceSnapshot else {
+            return workspaces.map {
+                OverlaySpaceItem(
+                    id: $0.order,
+                    workspace: $0,
+                    applicationBundleIdentifier: nil,
+                    applicationName: nil,
+                    isCurrent: $0.id == currentWorkspace?.id
+                )
+            }
+        }
+
+        var regularOrder = 0
+        return snapshot.spaces.compactMap { space in
+            let workspace: Workspace?
+            if space.isFullscreen {
+                workspace = nil
+            } else {
+                regularOrder += 1
+                workspace = workspaces.first(where: { $0.order == regularOrder })
+                guard workspace != nil else { return nil }
+            }
+            return OverlaySpaceItem(
+                id: space.id,
+                workspace: workspace,
+                applicationBundleIdentifier: space.applicationBundleIdentifier,
+                applicationName: space.applicationName,
+                isCurrent: space.id == snapshot.currentSpaceID
+            )
+        }
+    }
+
     var automaticOverlayWidth: Double {
-        let name = displayWorkspace?.name ?? "未校准"
-        var width = ceil((name as NSString).size(
+        let currentItem = overlaySpaces.first(where: \.isCurrent)
+        let name = currentItem?.workspace?.name
+            ?? currentItem?.applicationName
+            ?? "未校准"
+        let width = ceil((name as NSString).size(
             withAttributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)]
         ).width)
-        if let order = displayWorkspace?.order {
-            width += ceil((" · \(order)" as NSString).size(
-                withAttributes: [.font: NSFont.systemFont(ofSize: 13)]
-            ).width) + 4
-        }
-        if !mappingIsReliable { width += 18 }
-        return width + 16
+        return width + (!mappingIsReliable ? 34 : 16)
     }
 
     var automaticOverlayHeight: Double {
@@ -200,7 +241,16 @@ final class AppModel: ObservableObject {
     }
 
     func navigate(to workspace: Workspace) async {
-        guard spaceDetectionAvailable, let current = currentWorkspace else {
+        guard spaceDetectionAvailable else {
+            transientMessage = "无法读取当前系统桌面；请重新启动 Butai 或检查系统版本。"
+            return
+        }
+        if currentWorkspace == nil, isCurrentSpaceFullscreen,
+           let targetSpaceID = systemSpaceID(for: workspace.order) {
+            await navigate(toSystemSpaceID: targetSpaceID, targetRegularOrder: workspace.order)
+            return
+        }
+        guard let current = currentWorkspace else {
             transientMessage = "无法读取当前系统桌面；请重新启动 Butai 或检查系统版本。"
             return
         }
@@ -245,6 +295,51 @@ final class AppModel: ObservableObject {
         }
     }
 
+    func navigate(to item: OverlaySpaceItem) async {
+        guard !item.isCurrent else { return }
+        if let workspace = item.workspace {
+            await navigate(to: workspace)
+        } else {
+            await navigate(toSystemSpaceID: item.id, targetRegularOrder: nil)
+        }
+    }
+
+    private func navigate(toSystemSpaceID targetSpaceID: Int, targetRegularOrder: Int?) async {
+        guard spaceDetectionAvailable,
+              lastSystemSpaceSnapshot?.spaces.contains(where: { $0.id == targetSpaceID }) == true else {
+            transientMessage = "无法读取目标 Space；请稍后重试。"
+            return
+        }
+        guard lastSystemSpaceSnapshot?.currentSpaceID != targetSpaceID else { return }
+
+        transientMessage = nil
+        pendingTargetOrder = targetRegularOrder ?? 0
+        try? await Task.sleep(for: .milliseconds(50))
+        do {
+            try await navigator.navigate(toSystemSpaceID: targetSpaceID)
+            for _ in 0..<8 {
+                try await Task.sleep(for: .milliseconds(125))
+                _ = synchronizeWithSystemSpaces()
+                if lastSystemSpaceSnapshot?.currentSpaceID == targetSpaceID {
+                    pendingTargetOrder = nil
+                    transientMessage = nil
+                    return
+                }
+            }
+            pendingTargetOrder = nil
+            transientMessage = "macOS 没有完成这次 Space 切换，请稍后重试。"
+        } catch SpaceNavigationError.permissionDenied {
+            pendingTargetOrder = nil
+            transientMessage = "Space 切换需要辅助功能权限。请在系统设置中开启 Butai。"
+        } catch SpaceNavigationError.interrupted {
+            pendingTargetOrder = nil
+            transientMessage = "这次 Space 切换已被新的操作中断。"
+        } catch {
+            pendingTargetOrder = nil
+            transientMessage = "无法切换到目标 Space：\(error.localizedDescription)"
+        }
+    }
+
     func spaceDidChange() {
         _ = synchronizeWithSystemSpaces()
         // Keep the overlay ordered out until the navigator has also repaired
@@ -267,6 +362,11 @@ final class AppModel: ObservableObject {
 
     func setOverlayVisible(_ visible: Bool) {
         configuration.settings.overlayVisible = visible
+        persist()
+    }
+
+    func setFullscreenOverlayMode(_ mode: AppSettings.FullscreenOverlayMode) {
+        configuration.settings.fullscreenOverlayMode = mode
         persist()
     }
 
@@ -640,7 +740,9 @@ final class AppModel: ObservableObject {
 
         guard let order = snapshot.currentRegularOrder,
               let workspace = configuration.workspaces.first(where: { $0.order == order }) else {
-            configuration.calibration.reliability = .uncertain
+            configuration.calibration.reliability = snapshot.isCurrentSpaceFullscreen
+                ? .reliable
+                : .uncertain
             if actualCount > 9 {
                 transientMessage = "检测到 \(actualCount) 个普通桌面；当前版本最多显示前 9 个。"
             }
@@ -667,6 +769,12 @@ final class AppModel: ObservableObject {
             configuration.workspaces.removeLast(configuration.workspaces.count - count)
         }
         configuration.normalizeWorkspaceOrder()
+    }
+
+    private func systemSpaceID(for regularOrder: Int) -> Int? {
+        guard let snapshot = lastSystemSpaceSnapshot,
+              snapshot.regularSpaces.indices.contains(regularOrder - 1) else { return nil }
+        return snapshot.regularSpaces[regularOrder - 1].id
     }
 
     private func persist() {

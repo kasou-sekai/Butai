@@ -214,11 +214,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
         case nothing, checkPreset, completePreset
     }
 
+    public enum FullscreenOverlayMode: String, Codable, Sendable, CaseIterable {
+        case hidden
+        case revealAtTop
+        case always
+    }
+
     public var overlayVisible: Bool
     public var overlayHorizontalOffset: Double
     public var overlayVerticalOffset: Double
     public var overlayWidth: Double?
     public var overlayHeight: Double?
+    public var fullscreenOverlayMode: FullscreenOverlayMode?
     public var feedbackDuration: Double
     public var capsLockShortcutsEnabled: Bool
     public var switchingAction: SwitchingAction
@@ -229,6 +236,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         overlayVerticalOffset: Double = 0,
         overlayWidth: Double? = nil,
         overlayHeight: Double? = nil,
+        fullscreenOverlayMode: FullscreenOverlayMode? = .always,
         feedbackDuration: Double = 0.9,
         capsLockShortcutsEnabled: Bool = false,
         switchingAction: SwitchingAction = .nothing
@@ -238,6 +246,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.overlayVerticalOffset = overlayVerticalOffset
         self.overlayWidth = overlayWidth
         self.overlayHeight = overlayHeight
+        self.fullscreenOverlayMode = fullscreenOverlayMode
         self.feedbackDuration = feedbackDuration
         self.capsLockShortcutsEnabled = capsLockShortcutsEnabled
         self.switchingAction = switchingAction

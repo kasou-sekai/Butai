@@ -7,6 +7,8 @@ struct SystemSpace: Equatable, Sendable {
     let id: Int
     let uuid: String?
     let isFullscreen: Bool
+    let applicationBundleIdentifier: String?
+    let applicationName: String?
 }
 
 struct SystemSpaceSnapshot: Equatable, Sendable {
@@ -58,14 +60,110 @@ struct CGSSystemSpaceProvider: SystemSpaceProviding {
 
         let spaces = rawSpaces.compactMap { raw -> SystemSpace? in
             guard let id = raw["ManagedSpaceID"] as? Int else { return nil }
+            let isFullscreen = raw["TileLayoutManager"] is [String: Any]
+            let application = isFullscreen
+                ? fullscreenApplication(in: id, connection: connection, symbols: symbols)
+                    ?? applicationFromMetadata(in: raw)
+                    ?? (id == currentID ? eligibleApplication(NSWorkspace.shared.frontmostApplication) : nil)
+                : nil
+            let bundleIdentifier = application?.bundleIdentifier
             return SystemSpace(
                 id: id,
                 uuid: raw["uuid"] as? String,
-                isFullscreen: raw["TileLayoutManager"] is [String: Any]
+                isFullscreen: isFullscreen,
+                applicationBundleIdentifier: bundleIdentifier,
+                applicationName: application?.localizedName
+                    ?? fullscreenTitle(in: raw)
+                    ?? bundleIdentifier?.split(separator: ".").last.map(String.init)
+                    ?? (isFullscreen ? "全屏应用" : nil)
             )
         }
         guard !spaces.isEmpty else { return nil }
         return SystemSpaceSnapshot(displayID: displayID, spaces: spaces, currentSpaceID: currentID)
+    }
+
+    private func fullscreenApplication(
+        in spaceID: Int,
+        connection: Int32,
+        symbols: SkyLightSymbols
+    ) -> NSRunningApplication? {
+        guard let copyWindowsWithOptionsAndTags = symbols.copyWindowsWithOptionsAndTags else {
+            return nil
+        }
+        var setTags = [UInt64](repeating: 0, count: 2)
+        var clearTags = [UInt64](repeating: 0, count: 2)
+        let windowIDs: [NSNumber]? = setTags.withUnsafeMutableBufferPointer { setBuffer in
+            clearTags.withUnsafeMutableBufferPointer { clearBuffer in
+                copyWindowsWithOptionsAndTags(
+                    connection,
+                    0,
+                    [spaceID] as CFArray,
+                    0x2,
+                    setBuffer.baseAddress,
+                    clearBuffer.baseAddress
+                )?.takeRetainedValue() as? [NSNumber]
+            }
+        }
+        guard let windowIDs, !windowIDs.isEmpty,
+              let descriptions = CGWindowListCreateDescriptionFromArray(windowIDs as CFArray)
+                as? [[CFString: Any]] else {
+            return nil
+        }
+
+        return descriptions.lazy.compactMap { description -> NSRunningApplication? in
+            guard (description[kCGWindowLayer] as? NSNumber)?.intValue == 0,
+                  let pid = (description[kCGWindowOwnerPID] as? NSNumber)?.int32Value,
+                  pid > 0 else { return nil }
+            return eligibleApplication(NSRunningApplication(processIdentifier: pid))
+        }.first
+    }
+
+    private func applicationFromMetadata(in value: Any) -> NSRunningApplication? {
+        if let dictionary = value as? [String: Any] {
+            for (key, candidate) in dictionary {
+                let normalizedKey = key.lowercased().replacingOccurrences(of: "_", with: "")
+                if normalizedKey.contains("pid") || normalizedKey.contains("processidentifier"),
+                   let number = candidate as? NSNumber,
+                   let application = eligibleApplication(
+                       NSRunningApplication(processIdentifier: number.int32Value)
+                   ) {
+                    return application
+                }
+                if normalizedKey.contains("bundleidentifier") || normalizedKey == "bundleid",
+                   let identifier = candidate as? String,
+                   let application = NSRunningApplication.runningApplications(
+                       withBundleIdentifier: identifier
+                   ).first.flatMap(eligibleApplication) {
+                    return application
+                }
+            }
+            return dictionary.values.lazy.compactMap(applicationFromMetadata).first
+        }
+        if let array = value as? [Any] {
+            return array.lazy.compactMap(applicationFromMetadata).first
+        }
+        return nil
+    }
+
+    private func fullscreenTitle(in value: Any) -> String? {
+        if let dictionary = value as? [String: Any] {
+            let preferredKeys = ["ApplicationName", "LocalizedName", "OwnerName", "appName"]
+            for key in preferredKeys {
+                if let title = dictionary[key] as? String, !title.isEmpty { return title }
+            }
+            return dictionary.values.lazy.compactMap(fullscreenTitle).first
+        }
+        if let array = value as? [Any] {
+            return array.lazy.compactMap(fullscreenTitle).first
+        }
+        return nil
+    }
+
+    private func eligibleApplication(_ application: NSRunningApplication?) -> NSRunningApplication? {
+        guard let application,
+              application.bundleIdentifier != Bundle.main.bundleIdentifier,
+              application.bundleIdentifier != "com.apple.dock" else { return nil }
+        return application
     }
 }
 
@@ -73,12 +171,21 @@ private final class SkyLightSymbols: @unchecked Sendable {
     typealias DefaultConnection = @convention(c) () -> Int32
     typealias CopyManagedDisplaySpaces = @convention(c) (Int32) -> Unmanaged<CFArray>?
     typealias CopyActiveMenuBarDisplayIdentifier = @convention(c) (Int32) -> Unmanaged<CFString>?
+    typealias CopyWindowsWithOptionsAndTags = @convention(c) (
+        Int32,
+        Int32,
+        CFArray,
+        UInt32,
+        UnsafeMutablePointer<UInt64>?,
+        UnsafeMutablePointer<UInt64>?
+    ) -> Unmanaged<CFArray>?
 
     static let shared: SkyLightSymbols? = SkyLightSymbols()
 
     let defaultConnection: DefaultConnection
     let copyManagedDisplaySpaces: CopyManagedDisplaySpaces
     let copyActiveMenuBarDisplayIdentifier: CopyActiveMenuBarDisplayIdentifier
+    let copyWindowsWithOptionsAndTags: CopyWindowsWithOptionsAndTags?
     private let handle: UnsafeMutableRawPointer
 
     private init?() {
@@ -96,6 +203,9 @@ private final class SkyLightSymbols: @unchecked Sendable {
             activeDisplaySymbol,
             to: CopyActiveMenuBarDisplayIdentifier.self
         )
+        copyWindowsWithOptionsAndTags = dlsym(handle, "CGSCopyWindowsWithOptionsAndTags").map {
+            unsafeBitCast($0, to: CopyWindowsWithOptionsAndTags.self)
+        }
     }
 
     deinit { dlclose(handle) }

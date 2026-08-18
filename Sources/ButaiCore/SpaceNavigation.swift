@@ -10,7 +10,14 @@ public enum SpaceNavigationError: Error, Equatable, Sendable {
 
 public protocol SpaceNavigating: Sendable {
     func navigate(from currentOrder: Int, to targetOrder: Int, workspaceCount: Int) async throws
+    func navigate(toSystemSpaceID targetSpaceID: Int) async throws
     func cancel() async
+}
+
+public extension SpaceNavigating {
+    func navigate(toSystemSpaceID targetSpaceID: Int) async throws {
+        throw SpaceNavigationError.invalidTarget
+    }
 }
 
 public enum SpaceChangeOrigin: Equatable, Sendable {

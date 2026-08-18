@@ -472,6 +472,17 @@ private struct OverlaySettingsView: View {
                 get: { model.configuration.settings.overlayVisible },
                 set: model.setOverlayVisible
             ))
+            Picker("全屏应用上的浮窗", selection: Binding(
+                get: { model.configuration.settings.fullscreenOverlayMode ?? .always },
+                set: model.setFullscreenOverlayMode
+            )) {
+                Text("彻底隐藏").tag(AppSettings.FullscreenOverlayMode.hidden)
+                Text("移到顶部时显示").tag(AppSettings.FullscreenOverlayMode.revealAtTop)
+                Text("始终显示").tag(AppSettings.FullscreenOverlayMode.always)
+            }
+            Text("“移到顶部时显示”会在指针靠近浮窗对应的屏幕顶部位置时临时显示。此设置仅影响全屏应用 Space。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             overlayNumberField(
                 "水平偏移",
                 value: Binding(
