@@ -4,6 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="${0:A:h}"
 PROJECT_DIR="${SCRIPT_DIR:h}"
 DEVELOPER_ROOT="${DEVELOPER_DIR:-/Volumes/Data/Applications/Xcode-beta.app/Contents/Developer}"
+SWIFT_EXEC="${DEVELOPER_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
+SDK_PATH="$(DEVELOPER_DIR="${DEVELOPER_ROOT}" xcrun --sdk macosx --show-sdk-path)"
+SDK_VERSION="$(DEVELOPER_DIR="${DEVELOPER_ROOT}" xcrun --sdk macosx --show-sdk-version)"
 BUILD_ROOT="${BUTAI_BUILD_ROOT:-/private/tmp/ButaiReleaseBuild}"
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_PATH="${DIST_DIR}/Butai.app"
@@ -33,17 +36,23 @@ export DEVELOPER_DIR="${DEVELOPER_ROOT}"
 export CLANG_MODULE_CACHE_PATH="${BUILD_ROOT}/module-cache"
 export SWIFTPM_MODULECACHE_OVERRIDE="${BUILD_ROOT}/module-cache"
 
-swift build \
+"${SWIFT_EXEC}" build \
     --disable-sandbox \
     --configuration release \
     -debug-info-format none \
     --product Butai \
-    --scratch-path "${BUILD_ROOT}/swiftpm"
+    --scratch-path "${BUILD_ROOT}/swiftpm" \
+    --sdk "${SDK_PATH}" \
+    -Xlinker -platform_version \
+    -Xlinker macos \
+    -Xlinker 14.0 \
+    -Xlinker "${SDK_VERSION}"
 
-BIN_DIR="$(swift build \
+BIN_DIR="$("${SWIFT_EXEC}" build \
     --disable-sandbox \
     --configuration release \
     --scratch-path "${BUILD_ROOT}/swiftpm" \
+    --sdk "${SDK_PATH}" \
     --show-bin-path)"
 
 mkdir -p "${APP_PATH}/Contents/MacOS" "${APP_PATH}/Contents/Resources"
@@ -65,5 +74,12 @@ ditto -c -k --sequesterRsrc --keepParent "${APP_PATH}" "${ZIP_PATH}"
 plutil -lint "${APP_PATH}/Contents/Info.plist"
 codesign --verify --deep --strict --verbose=2 "${APP_PATH}"
 
+LINKED_SDK="$(vtool -show-build "${APP_PATH}/Contents/MacOS/Butai" | awk '/sdk / { print $2; exit }')"
+if [[ "${LINKED_SDK}" != "${SDK_VERSION}" ]]; then
+    print -u2 "Expected linked SDK ${SDK_VERSION}, got ${LINKED_SDK}."
+    exit 3
+fi
+
 print "Created ${APP_PATH}"
 print "Created ${ZIP_PATH}"
+print "Linked against macOS SDK ${LINKED_SDK}"

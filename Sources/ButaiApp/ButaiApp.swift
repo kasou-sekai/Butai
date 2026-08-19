@@ -9,6 +9,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var spaceObserver: SpaceObserver?
     private var screenObserver: NSObjectProtocol?
     private var setupCancellable: AnyCancellable?
+    private var settingsWindowController: NSWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
@@ -35,12 +36,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             .sink { _ in
                 Task { @MainActor in
                     try? await Task.sleep(for: .milliseconds(500))
-                    NSApplication.shared.activate(ignoringOtherApps: true)
-                    _ = NSApplication.shared.sendAction(
-                        Selector(("showSettingsWindow:")),
-                        to: nil,
-                        from: nil
-                    )
+                    self.showSettingsWindow()
                 }
             }
 
@@ -55,6 +51,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
     }
+
+    func showSettingsWindow() {
+        let controller: NSWindowController
+        if let settingsWindowController {
+            controller = settingsWindowController
+        } else {
+            let content = SettingsView().environmentObject(model)
+            let hostingController = NSHostingController(rootView: content)
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 920, height: 650),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.title = "Butai 设置"
+            window.titleVisibility = .visible
+            window.titlebarAppearsTransparent = true
+            window.titlebarSeparatorStyle = .none
+            window.toolbarStyle = .unified
+            window.contentMinSize = NSSize(width: 760, height: 520)
+            window.contentMaxSize = NSSize(width: 10_000, height: 10_000)
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            window.isReleasedWhenClosed = false
+            window.contentViewController = hostingController
+            window.setFrameAutosaveName("ButaiSettingsWindow")
+
+            controller = NSWindowController(window: window)
+            settingsWindowController = controller
+        }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        controller.showWindow(nil)
+        controller.window?.makeKeyAndOrderFront(nil)
+    }
 }
 
 @main
@@ -63,21 +93,26 @@ struct ButaiApp: App {
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarContent(model: delegate.model)
+            MenuBarContent(
+                model: delegate.model,
+                openSettings: delegate.showSettingsWindow
+            )
         } label: {
             Label(delegate.model.displayWorkspace?.name ?? "Butai", systemImage: "theatermasks")
         }
         .menuBarExtraStyle(.menu)
-
-        Settings {
-            SettingsView()
-                .environmentObject(delegate.model)
+        .commands {
+            CommandGroup(replacing: .appSettings) {
+                Button("设置…") { delegate.showSettingsWindow() }
+                    .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }
 
 private struct MenuBarContent: View {
     @ObservedObject var model: AppModel
+    let openSettings: () -> Void
 
     var body: some View {
         if let current = model.currentWorkspace {
@@ -108,7 +143,7 @@ private struct MenuBarContent: View {
         }
         .disabled(model.isPresetRunning)
         Divider()
-        SettingsLink { Text("设置…") }
+        Button("设置…", systemImage: "gearshape") { openSettings() }
         Divider()
         Button("退出 Butai") { NSApplication.shared.terminate(nil) }
     }
