@@ -38,6 +38,17 @@ protocol SystemSpaceProviding: Sendable {
     func snapshot() -> SystemSpaceSnapshot?
 }
 
+struct SystemSpaceWindowMembershipRepairer {
+    func add(windowNumbers: [Int], to spaceIDs: [Int]) -> Bool {
+        guard !windowNumbers.isEmpty, !spaceIDs.isEmpty,
+              let symbols = SkyLightSymbols.shared,
+              let addWindowsToSpaces = symbols.addWindowsToSpaces else { return false }
+        let windows = windowNumbers.map(NSNumber.init(value:)) as CFArray
+        let spaces = spaceIDs.map(NSNumber.init(value:)) as CFArray
+        return addWindowsToSpaces(symbols.defaultConnection(), windows, spaces) == .success
+    }
+}
+
 /// Runtime-only adapter for the private CGS read APIs used by established
 /// open-source utilities such as WhichSpace. IDs never leave this process or
 /// enter Butai's persisted workspace model.
@@ -179,6 +190,7 @@ private final class SkyLightSymbols: @unchecked Sendable {
         UnsafeMutablePointer<UInt64>?,
         UnsafeMutablePointer<UInt64>?
     ) -> Unmanaged<CFArray>?
+    typealias AddWindowsToSpaces = @convention(c) (Int32, CFArray, CFArray) -> CGError
 
     static let shared: SkyLightSymbols? = SkyLightSymbols()
 
@@ -186,6 +198,7 @@ private final class SkyLightSymbols: @unchecked Sendable {
     let copyManagedDisplaySpaces: CopyManagedDisplaySpaces
     let copyActiveMenuBarDisplayIdentifier: CopyActiveMenuBarDisplayIdentifier
     let copyWindowsWithOptionsAndTags: CopyWindowsWithOptionsAndTags?
+    let addWindowsToSpaces: AddWindowsToSpaces?
     private let handle: UnsafeMutableRawPointer
 
     private init?() {
@@ -205,6 +218,9 @@ private final class SkyLightSymbols: @unchecked Sendable {
         )
         copyWindowsWithOptionsAndTags = dlsym(handle, "CGSCopyWindowsWithOptionsAndTags").map {
             unsafeBitCast($0, to: CopyWindowsWithOptionsAndTags.self)
+        }
+        addWindowsToSpaces = dlsym(handle, "CGSAddWindowsToSpaces").map {
+            unsafeBitCast($0, to: AddWindowsToSpaces.self)
         }
     }
 

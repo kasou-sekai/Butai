@@ -94,6 +94,10 @@ final class AppModel: ObservableObject {
         }
     }
 
+    var systemSpaceIDs: [Int] {
+        lastSystemSpaceSnapshot?.spaces.map(\.id) ?? []
+    }
+
     var automaticOverlayWidth: Double {
         let currentItem = overlaySpaces.first(where: \.isCurrent)
         let name = currentItem?.workspace?.name

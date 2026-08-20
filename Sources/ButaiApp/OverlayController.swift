@@ -10,6 +10,7 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private static let animationDuration = 0.18
 
     private let model: AppModel
+    private let membershipRepairer = SystemSpaceWindowMembershipRepairer()
     private let panel: NSPanel
     private let popupPanel: NSPanel
     private var cancellables = Set<AnyCancellable>()
@@ -24,12 +25,21 @@ final class OverlayController: NSObject, NSWindowDelegate {
     private var fullscreenRevealed = false
     private var isPositioningProgrammatically = false
 
-    private static let allSpacesBehavior: NSWindow.CollectionBehavior = [
-        .canJoinAllSpaces,
-        .fullScreenAuxiliary,
-        .stationary,
-        .ignoresCycle
-    ]
+    private static var allSpacesBehavior: NSWindow.CollectionBehavior {
+        var behavior: NSWindow.CollectionBehavior = [
+            .canJoinAllSpaces,
+            .stationary,
+            .ignoresCycle
+        ]
+        if #available(macOS 26.0, *) {
+            // Apple recommends this behavior for floating windows and system
+            // overlays that need to join other applications' full-screen Spaces.
+            behavior.insert(.canJoinAllApplications)
+        } else {
+            behavior.insert(.fullScreenAuxiliary)
+        }
+        return behavior
+    }
 
     init(model: AppModel) {
         self.model = model
@@ -81,12 +91,8 @@ final class OverlayController: NSObject, NSWindowDelegate {
         model.$pendingTargetOrder
             .removeDuplicates()
             .receive(on: RunLoop.main)
-            .sink { [weak self] pendingTargetOrder in
-                guard let self else { return }
-                if pendingTargetOrder == nil {
-                    self.reattachPanelsToAllSpaces()
-                }
-                self.refresh()
+            .sink { [weak self] _ in
+                self?.refresh()
             }
             .store(in: &cancellables)
 
@@ -103,16 +109,27 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func activeSpaceDidChange() {
-        // WindowServer can acknowledge the Space notification before it has
-        // finished rebuilding cross-Space window membership. Repair on the
-        // next stable frame instead of repeatedly ordering the panel during
-        // the transition animation.
+        // The notification arrives while WindowServer may still be animating
+        // and rebuilding Space membership. Toggling canJoinAllSpaces during
+        // that interval can pin a panel to the transition's current Space.
         spaceRepairTask?.cancel()
         spaceRepairTask = Task { @MainActor [weak self] in
-            try? await Task.sleep(for: .milliseconds(120))
+            try? await Task.sleep(for: .milliseconds(420))
             guard !Task.isCancelled, let self else { return }
-            self.reattachPanelsToAllSpaces()
+            self.repairPanelMembershipWithoutReordering()
             self.refresh()
+
+            // Give longer full-screen transitions a second chance without
+            // detaching a healthy panel again.
+            try? await Task.sleep(for: .milliseconds(650))
+            guard !Task.isCancelled, self.overlayShouldBeVisible else { return }
+            if !self.panel.isOnActiveSpace {
+                self.repairPanelMembershipWithoutReordering()
+                self.refresh()
+            } else {
+                self.panel.orderFrontRegardless()
+                if self.expanded { self.popupPanel.orderFrontRegardless() }
+            }
         }
     }
 
@@ -327,18 +344,15 @@ final class OverlayController: NSObject, NSWindowDelegate {
         revealHideTask = nil
     }
 
-    private func reattachPanelsToAllSpaces() {
-        // Reapplying canJoinAllSpaces makes WindowServer rebuild the panels'
-        // cross-Space membership. Ordering them out first is important: a
-        // visible stationary panel can otherwise remain attached only to the
-        // Space that was active when its behavior changed.
-        panel.orderOut(nil)
-        popupPanel.orderOut(nil)
-        let detachedBehavior: NSWindow.CollectionBehavior = [.stationary, .ignoresCycle]
-        panel.collectionBehavior = detachedBehavior
-        popupPanel.collectionBehavior = detachedBehavior
+    private func repairPanelMembershipWithoutReordering() {
+        // Update WindowServer membership in place. Unlike orderOut/toggle/orderFront,
+        // this preserves visibility, alpha, frame and the popup's hover state.
         panel.collectionBehavior = Self.allSpacesBehavior
         popupPanel.collectionBehavior = Self.allSpacesBehavior
+        _ = membershipRepairer.add(
+            windowNumbers: [panel.windowNumber, popupPanel.windowNumber],
+            to: model.systemSpaceIDs
+        )
     }
 
     private func preferredCollapsedSize() -> NSSize {
