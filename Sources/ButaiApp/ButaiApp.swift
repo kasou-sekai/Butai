@@ -23,11 +23,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         overlayController?.show()
 
-        if !CompatibilityChecker.accessibilityIsGranted {
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(700))
-                CompatibilityChecker.requestAccessibility()
-            }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(700))
+            self.showRequiredPermissionPromptIfNeeded()
         }
 
         setupCancellable = model.$needsInitialSetup
@@ -84,6 +82,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
         controller.showWindow(nil)
         controller.window?.makeKeyAndOrderFront(nil)
+    }
+
+    private func showRequiredPermissionPromptIfNeeded() {
+        let missing = CompatibilityChecker.missingRequiredPermissions
+        guard !missing.isEmpty else { return }
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Butai 需要系统权限"
+        alert.informativeText = missing
+            .map { "\($0.title)：\($0.detail)" }
+            .joined(separator: "\n")
+        alert.addButton(withTitle: "去授权")
+        alert.addButton(withTitle: "稍后")
+
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        CompatibilityChecker.requestRequiredPermissions()
+        NSWorkspace.shared.open(CompatibilityChecker.accessibilitySettingsURL)
     }
 }
 

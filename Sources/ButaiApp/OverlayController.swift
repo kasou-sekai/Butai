@@ -317,7 +317,6 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard let screen = NSScreen.main ?? NSScreen.screens.first else { return .zero }
         let size = preferredCollapsedSize()
         let desiredX = screen.frame.midX - size.width / 2
-            + model.configuration.settings.overlayHorizontalOffset
         let clampedX = min(max(desiredX, screen.frame.minX), screen.frame.maxX - size.width)
         return NSRect(
             x: clampedX - 32,
@@ -412,7 +411,6 @@ final class OverlayController: NSObject, NSWindowDelegate {
         let size = preferredCollapsedSize()
         let screenFrame = screen.frame
         let desiredX = screenFrame.midX - size.width / 2
-            + model.configuration.settings.overlayHorizontalOffset
         let origin = NSPoint(
             x: min(max(desiredX, screenFrame.minX), screenFrame.maxX - size.width),
             y: min(
@@ -446,10 +444,11 @@ final class OverlayController: NSObject, NSWindowDelegate {
     }
 
     func windowDidMove(_ notification: Notification) {
-        guard !isPositioningProgrammatically,
-              let screen = panel.screen ?? NSScreen.main else { return }
-        let horizontal = panel.frame.midX - screen.frame.midX
-        model.setOverlayHorizontalOffset(horizontal)
+        guard !isPositioningProgrammatically else { return }
+        // Horizontal movement is not user-configurable. If WindowServer or a
+        // drag changes the panel frame, immediately restore the centered
+        // position instead of persisting a new offset.
+        positionPanel()
         if expanded { positionPopupPanel() }
     }
 }

@@ -7,6 +7,7 @@ public actor ConfigurationRepository {
     }
 
     private static let maximumConfigurationBytes = 10 * 1_024 * 1_024
+    private static let supportedSchemaVersions: Set<Int> = [1, 2]
 
     public let configurationURL: URL
     public let backupURL: URL
@@ -42,7 +43,7 @@ public actor ConfigurationRepository {
     }
 
     public func save(_ configuration: ButaiConfiguration) throws {
-        guard configuration.schemaVersion == 1 else {
+        guard Self.supportedSchemaVersions.contains(configuration.schemaVersion) else {
             throw RepositoryError.unsupportedSchema(configuration.schemaVersion)
         }
 
@@ -74,7 +75,7 @@ public actor ConfigurationRepository {
 
     private func decode(_ url: URL) throws -> ButaiConfiguration {
         let configuration = try decoder.decode(ButaiConfiguration.self, from: checkedData(contentsOf: url))
-        guard configuration.schemaVersion == 1 else {
+        guard Self.supportedSchemaVersions.contains(configuration.schemaVersion) else {
             throw RepositoryError.unsupportedSchema(configuration.schemaVersion)
         }
         return configuration

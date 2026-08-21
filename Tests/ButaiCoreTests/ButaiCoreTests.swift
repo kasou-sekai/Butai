@@ -14,6 +14,22 @@ struct ButaiCoreTests {
         #expect(excessive.workspaces.map(\.order) == Array(1...9))
     }
 
+    @Test("Overlay horizontal offset is always fixed at zero")
+    func overlayHorizontalOffsetIsFixed() throws {
+        let settings = AppSettings(overlayHorizontalOffset: 240, overlayVerticalOffset: 18)
+        #expect(settings.overlayHorizontalOffset == 0)
+
+        let data = try JSONEncoder().encode(settings)
+        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
+        #expect(decoded.overlayHorizontalOffset == 0)
+
+        let historicalData = Data(
+            #"{"overlayHorizontalOffset":240,"overlayVerticalOffset":18}"#.utf8
+        )
+        let historicalDecoded = try JSONDecoder().decode(AppSettings.self, from: historicalData)
+        #expect(historicalDecoded.overlayHorizontalOffset == 0)
+    }
+
     @Test("Configuration round trips and writes a backup")
     func persistenceRoundTrip() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -75,6 +91,55 @@ struct ButaiCoreTests {
         #expect(directoryMode?.intValue == 0o700)
         #expect(configurationMode?.intValue == 0o600)
         #expect(backupMode?.intValue == 0o600)
+    }
+
+    @Test("Display profiles isolate names and retain hidden workspaces")
+    func displayProfilesRemainBound() {
+        var firstDisplay = DisplayWorkspaceProfile.new(displayIdentifier: "display-A", workspaceCount: 4)
+        var firstVisible = firstDisplay.visibleWorkspaces(count: 2)
+        firstVisible[0].name = "主屏开发"
+        firstDisplay.updateVisibleWorkspaces(firstVisible)
+
+        var secondDisplay = DisplayWorkspaceProfile.new(displayIdentifier: "display-B", workspaceCount: 2)
+        var secondVisible = secondDisplay.visibleWorkspaces(count: 2)
+        secondVisible[0].name = "副屏会议"
+        secondDisplay.updateVisibleWorkspaces(secondVisible)
+
+        #expect(firstDisplay.workspaces[0].name == "主屏开发")
+        #expect(firstDisplay.workspaces.count == 4)
+        #expect(firstDisplay.workspaces[2].name == "工作区 3")
+        #expect(secondDisplay.workspaces[0].name == "副屏会议")
+        #expect(secondDisplay.workspaces[0].name != firstDisplay.workspaces[0].name)
+    }
+
+    @Test("Display profiles survive configuration persistence")
+    func displayProfilesPersistence() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let repository = ConfigurationRepository(
+            configurationURL: directory.appendingPathComponent("configuration.json")
+        )
+        let first = DisplayWorkspaceProfile(
+            displayIdentifier: "display-A",
+            workspaces: [Workspace(order: 1, name: "主屏")]
+        )
+        let second = DisplayWorkspaceProfile(
+            displayIdentifier: "display-B",
+            workspaces: [Workspace(order: 1, name: "副屏")]
+        )
+        let configuration = ButaiConfiguration(
+            workspaces: first.workspaces,
+            displayProfiles: [first, second]
+        )
+
+        try await repository.save(configuration)
+        let loaded = try await repository.load()
+
+        #expect(loaded?.schemaVersion == 2)
+        #expect(loaded?.displayProfiles.map(\.displayIdentifier) == ["display-A", "display-B"])
+        #expect(loaded?.displayProfiles.first?.workspaces.first?.name == "主屏")
+        #expect(loaded?.displayProfiles.last?.workspaces.first?.name == "副屏")
     }
 
     @Test("Preset execution report counts successes and issues")

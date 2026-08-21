@@ -8,7 +8,6 @@ struct SettingsView: View {
         case workspaces = "工作区"
         case presets = "预设"
         case overlay = "浮窗"
-        case permissions = "权限与诊断"
         case about = "关于"
         var id: String { rawValue }
     }
@@ -28,22 +27,6 @@ struct SettingsView: View {
             .listStyle(.sidebar)
             .navigationTitle("Butai")
             .navigationSplitViewColumnWidth(min: 176, ideal: 196, max: 220)
-            .safeAreaInset(edge: .bottom) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("让每个桌面，各就各位。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    if let current = model.currentWorkspace {
-                        Label("桌面 \(current.order) · \(current.name)", systemImage: "circle.fill")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .symbolRenderingMode(.hierarchical)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-            }
         } detail: {
             VStack(spacing: 0) {
                 if let message = model.transientMessage {
@@ -64,8 +47,6 @@ struct SettingsView: View {
                     PresetSettingsView()
                 case .overlay:
                     OverlaySettingsView()
-                case .permissions:
-                    PermissionsView()
                 case .about:
                     AboutView()
                 }
@@ -80,7 +61,6 @@ struct SettingsView: View {
         case .workspaces: "rectangle.3.group"
         case .presets: "macwindow.on.rectangle"
         case .overlay: "menubar.rectangle"
-        case .permissions: "checkmark.shield"
         case .about: "info.circle"
         }
     }
@@ -150,37 +130,6 @@ private struct SettingsMessageBanner: View {
             fallback: .orange.opacity(0.1)
         )
         .overlay(alignment: .bottom) { Divider() }
-    }
-}
-
-private struct SettingsPageHeader: View {
-    let title: String
-    let subtitle: String
-    let symbol: String
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: symbol)
-                .font(.system(size: 22, weight: .semibold))
-                .foregroundStyle(Color.accentColor)
-                .frame(width: 42, height: 42)
-                .butaiGlassSurface(
-                    in: RoundedRectangle(cornerRadius: 11, style: .continuous),
-                    tint: Color.accentColor.opacity(0.16),
-                    fallback: Color.accentColor.opacity(0.12)
-                )
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(title)
-                    .font(.title2.weight(.semibold))
-                Text(subtitle)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-        }
-        .padding(.bottom, 6)
     }
 }
 
@@ -264,12 +213,6 @@ private struct PresetSettingsView: View {
 
     var body: some View {
         Form {
-            SettingsPageHeader(
-                title: "预设与窗口",
-                subtitle: "保存每个工作区需要的应用、文件和窗口布局。补全不会关闭额外窗口。",
-                symbol: "macwindow.on.rectangle"
-            )
-
             Section("目标工作区") {
                 Picker("工作区", selection: Binding(
                     get: { workspaceID },
@@ -554,12 +497,6 @@ private struct WorkspaceSettingsView: View {
 
     var body: some View {
         Form {
-            SettingsPageHeader(
-                title: "工作区",
-                subtitle: "为 macOS 桌面设置清晰的名称，并确认 Butai 当前所在的位置。",
-                symbol: "rectangle.3.group"
-            )
-
             if model.needsInitialSetup {
                 Section {
                     SettingsCallout(
@@ -602,7 +539,7 @@ private struct WorkspaceSettingsView: View {
                 } else {
                     SettingsCallout(
                         title: "无法自动读取系统桌面",
-                        detail: "你仍可手动设置桌面数量和当前位置。完成后可在“权限与诊断”中重新检查。",
+                        detail: "你仍可手动设置桌面数量和当前位置。",
                         symbol: "exclamationmark.triangle.fill",
                         color: .orange
                     )
@@ -649,9 +586,10 @@ private struct WorkspaceSettingsView: View {
                             .textFieldStyle(.plain)
                             .labelsHidden()
                             .font(.body.weight(.medium))
-                            Text("对应 Mission Control 中的第 \(workspace.order) 个普通桌面")
+                            Text("应用：\(applicationSummary(for: workspace))")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
                         Spacer(minLength: 8)
                         if model.currentWorkspace?.id == workspace.id {
@@ -684,6 +622,11 @@ private struct WorkspaceSettingsView: View {
         .formStyle(.grouped)
         .navigationTitle("工作区")
     }
+
+    private func applicationSummary(for workspace: Workspace) -> String {
+        guard let names = model.applicationNames(for: workspace) else { return "无法读取" }
+        return names.isEmpty ? "暂无" : names.joined(separator: "、")
+    }
 }
 
 private struct OverlaySettingsView: View {
@@ -691,12 +634,6 @@ private struct OverlaySettingsView: View {
 
     var body: some View {
         Form {
-            SettingsPageHeader(
-                title: "顶部浮窗",
-                subtitle: "让当前工作区保持可见，同时尽量不遮挡菜单栏和全屏内容。",
-                symbol: "menubar.rectangle"
-            )
-
             Section("显示") {
                 Toggle("显示顶部工作区浮窗", isOn: Binding(
                     get: { model.configuration.settings.overlayVisible },
@@ -710,19 +647,9 @@ private struct OverlaySettingsView: View {
                     Text("移到顶部时显示").tag(AppSettings.FullscreenOverlayMode.revealAtTop)
                     Text("始终显示").tag(AppSettings.FullscreenOverlayMode.always)
                 }
-                Text("“移到顶部时显示”只在指针靠近屏幕顶部时出现，适合观看视频或演示。")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
 
             Section("位置") {
-                overlayNumberField(
-                    "水平偏移",
-                    value: Binding(
-                        get: { model.configuration.settings.overlayHorizontalOffset },
-                        set: model.setOverlayHorizontalOffset
-                    )
-                )
                 overlayNumberField(
                     "顶部偏移",
                     value: Binding(
@@ -731,9 +658,6 @@ private struct OverlaySettingsView: View {
                     )
                 )
                 HStack {
-                    Text("正数向右或向下移动；浮窗也可以直接拖动。")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
                     Spacer()
                     Button("恢复默认位置", systemImage: "arrow.counterclockwise") {
                         model.resetOverlayPosition()
@@ -805,146 +729,26 @@ private struct OverlaySettingsView: View {
     }
 }
 
-private struct PermissionsView: View {
-    @EnvironmentObject private var model: AppModel
-    @State private var checks = CompatibilityChecker.checks()
-
-    private var failingCheckCount: Int {
-        checks.filter { $0.state != .pass }.count
-    }
-
-    var body: some View {
-        Form {
-            SettingsPageHeader(
-                title: "权限与诊断",
-                subtitle: "确认桌面切换、窗口读取和应用适配器能够可靠工作。",
-                symbol: "checkmark.shield"
-            )
-
-            SettingsCallout(
-                title: failingCheckCount == 0 ? "系统已准备就绪" : "还有 \(failingCheckCount) 项需要处理",
-                detail: failingCheckCount == 0
-                    ? "Butai 所需的系统能力均可用。"
-                    : "先处理失败项；警告项通常仍可使用，但体验可能受限。",
-                symbol: failingCheckCount == 0 ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-                color: failingCheckCount == 0 ? .green : .orange
-            )
-
-            Section("系统兼容性检查") {
-                ForEach(checks) { check in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: symbol(for: check.state))
-                            .foregroundStyle(color(for: check.state))
-                            .font(.body.weight(.semibold))
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(check.title).fontWeight(.medium)
-                            Text(check.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                        Spacer()
-                        if let url = check.repairURL {
-                            Button("打开设置") { NSWorkspace.shared.open(url) }
-                                .butaiGlassButton()
-                                .controlSize(.small)
-                        }
-                    }
-                    .padding(.vertical, 3)
-                }
-            }
-            Section("应用适配器") {
-                ForEach(model.adapterHealth) { adapter in
-                    HStack(alignment: .top, spacing: 10) {
-                        Image(systemName: adapterSymbol(adapter.state))
-                            .foregroundStyle(adapterColor(adapter.state))
-                            .font(.body.weight(.semibold))
-                            .frame(width: 24)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(adapter.name).fontWeight(.medium)
-                            Text(adapter.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .padding(.vertical, 3)
-                }
-            }
-            HStack {
-                Button("请求辅助功能权限") { CompatibilityChecker.requestAccessibility() }
-                Button("请求输入监听权限") { CompatibilityChecker.requestInputMonitoring() }
-                Spacer()
-                Button("重新检查", systemImage: "arrow.clockwise") {
-                    checks = CompatibilityChecker.checks()
-                }
-                .butaiGlassButton(prominent: true)
-            }
-            .butaiGlassButton()
-        }
-        .formStyle(.grouped)
-        .navigationTitle("权限与诊断")
-        .onAppear { checks = CompatibilityChecker.checks() }
-    }
-
-    private func symbol(for state: CompatibilityCheck.State) -> String {
-        switch state { case .pass: "checkmark.circle.fill"; case .warning: "exclamationmark.triangle.fill"; case .failure: "xmark.circle.fill" }
-    }
-
-    private func color(for state: CompatibilityCheck.State) -> Color {
-        switch state { case .pass: .green; case .warning: .yellow; case .failure: .red }
-    }
-
-    private func adapterSymbol(_ state: AdapterHealth.State) -> String {
-        switch state {
-        case .ready: "checkmark.circle.fill"
-        case .degraded, .experimental: "exclamationmark.triangle.fill"
-        case .unavailable: "xmark.circle.fill"
-        }
-    }
-
-    private func adapterColor(_ state: AdapterHealth.State) -> Color {
-        switch state {
-        case .ready: .green
-        case .degraded, .experimental: .yellow
-        case .unavailable: .red
-        }
-    }
-}
-
 private struct AboutView: View {
     var body: some View {
-        VStack(spacing: 20) {
-            ZStack {
-                Image(systemName: "theatermasks.fill")
-                    .font(.system(size: 54, weight: .medium))
-                    .symbolRenderingMode(.hierarchical)
-                    .foregroundStyle(Color.accentColor)
-            }
-            .frame(width: 112, height: 112)
-            .butaiGlassSurface(
-                in: RoundedRectangle(cornerRadius: 26, style: .continuous),
-                tint: Color.accentColor.opacity(0.12),
-                interactive: true,
-                fallback: Color(nsColor: .controlBackgroundColor)
-            )
-            .shadow(color: .black.opacity(0.1), radius: 18, y: 8)
-            VStack(spacing: 6) {
-                Text("Butai")
-                    .font(.largeTitle.bold())
-                Text("Set the stage for your work.")
-                    .font(.headline)
-                    .foregroundStyle(.secondary)
-                Text("让每个桌面，各就各位。")
-                    .font(.callout)
-                    .foregroundStyle(.tertiary)
-            }
-            Text("Butai 增强 macOS 原生 Spaces，在不打断当前工作的前提下，帮助你命名、切换和恢复每个工作区。")
+        VStack(spacing: 8) {
+            Image(systemName: "theatermasks.fill")
+                .font(.system(size: 54, weight: .medium))
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 112, height: 112)
+                .butaiGlassSurface(
+                    in: RoundedRectangle(cornerRadius: 26, style: .continuous),
+                    tint: Color.accentColor.opacity(0.12),
+                    interactive: true,
+                    fallback: Color(nsColor: .controlBackgroundColor)
+                )
+                .shadow(color: .black.opacity(0.1), radius: 18, y: 8)
+            Text("Butai")
+                .font(.largeTitle.bold())
+            Text(version)
                 .font(.callout)
                 .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: 430)
         }
         .padding(48)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -956,5 +760,9 @@ private struct AboutView: View {
                 endRadius: 330
             )
         )
+    }
+
+    private var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.5.37"
     }
 }

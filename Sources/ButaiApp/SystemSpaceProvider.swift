@@ -9,12 +9,14 @@ struct SystemSpace: Equatable, Sendable {
     let isFullscreen: Bool
     let applicationBundleIdentifier: String?
     let applicationName: String?
+    let applicationNames: [String]
 }
 
 struct SystemSpaceSnapshot: Equatable, Sendable {
     let displayID: String
     let spaces: [SystemSpace]
     let currentSpaceID: Int
+    let applicationInventoryAvailable: Bool
 
     var regularSpaces: [SystemSpace] { spaces.filter { !$0.isFullscreen } }
 
@@ -61,10 +63,20 @@ struct CGSSystemSpaceProvider: SystemSpaceProviding {
 
         let activeDisplay = symbols.copyActiveMenuBarDisplayIdentifier(connection)?
             .takeRetainedValue() as String?
-        let display = rawDisplays.first { ($0["Display Identifier"] as? String) == activeDisplay }
-            ?? rawDisplays.first
+        // Never guess a display when more than one is present. Falling back
+        // to the first raw entry can apply one monitor's workspace names to
+        // another monitor during hot-plug transitions.
+        let display: [String: Any]?
+        if let activeDisplay {
+            display = rawDisplays.first { ($0["Display Identifier"] as? String) == activeDisplay }
+        } else if rawDisplays.count == 1 {
+            display = rawDisplays[0]
+        } else {
+            return nil
+        }
         guard let display,
-              let displayID = display["Display Identifier"] as? String,
+              let rawDisplayID = display["Display Identifier"] as? String,
+              !rawDisplayID.isEmpty,
               let rawSpaces = display["Spaces"] as? [[String: Any]],
               let current = display["Current Space"] as? [String: Any],
               let currentID = current["ManagedSpaceID"] as? Int else { return nil }
@@ -72,12 +84,18 @@ struct CGSSystemSpaceProvider: SystemSpaceProviding {
         let spaces = rawSpaces.compactMap { raw -> SystemSpace? in
             guard let id = raw["ManagedSpaceID"] as? Int else { return nil }
             let isFullscreen = raw["TileLayoutManager"] is [String: Any]
+            let querySpaceID = (raw["id64"] as? NSNumber) ?? NSNumber(value: id)
+            let applications = applications(in: querySpaceID, connection: connection, symbols: symbols)
             let application = isFullscreen
-                ? fullscreenApplication(in: id, connection: connection, symbols: symbols)
+                ? applications.first
                     ?? applicationFromMetadata(in: raw)
                     ?? (id == currentID ? eligibleApplication(NSWorkspace.shared.frontmostApplication) : nil)
                 : nil
             let bundleIdentifier = application?.bundleIdentifier
+            let applicationNames = uniqueApplicationNames(
+                applications.map { $0.localizedName ?? $0.bundleIdentifier ?? "" }
+                    + (application.map { [$0.localizedName ?? $0.bundleIdentifier ?? ""] } ?? [])
+            )
             return SystemSpace(
                 id: id,
                 uuid: raw["uuid"] as? String,
@@ -86,47 +104,86 @@ struct CGSSystemSpaceProvider: SystemSpaceProviding {
                 applicationName: application?.localizedName
                     ?? fullscreenTitle(in: raw)
                     ?? bundleIdentifier?.split(separator: ".").last.map(String.init)
-                    ?? (isFullscreen ? "全屏应用" : nil)
+                    ?? (isFullscreen ? "全屏应用" : nil),
+                applicationNames: applicationNames
             )
         }
         guard !spaces.isEmpty else { return nil }
-        return SystemSpaceSnapshot(displayID: displayID, spaces: spaces, currentSpaceID: currentID)
+        return SystemSpaceSnapshot(
+            displayID: persistentDisplayIdentifier(rawDisplayID),
+            spaces: spaces,
+            currentSpaceID: currentID,
+            applicationInventoryAvailable: symbols.copyWindowsWithOptionsAndTags != nil
+        )
     }
 
-    private func fullscreenApplication(
-        in spaceID: Int,
+    /// Prefer a physical display identity when CoreGraphics exposes one.
+    /// Serial numbers distinguish two identical external displays; the raw
+    /// CGS identifier is retained as a conservative fallback when hardware
+    /// identity is unavailable.
+    private func persistentDisplayIdentifier(_ rawIdentifier: String) -> String {
+        guard let rawNumber = UInt32(rawIdentifier) else { return rawIdentifier }
+        let displayID = CGDirectDisplayID(rawNumber)
+        let vendor = CGDisplayVendorNumber(displayID)
+        let model = CGDisplayModelNumber(displayID)
+        let serial = CGDisplaySerialNumber(displayID)
+
+        if serial != 0 {
+            return "hardware:\(vendor):\(model):\(serial)"
+        }
+        if CGDisplayIsBuiltin(displayID) != 0 {
+            return "builtin:\(vendor):\(model)"
+        }
+        return "runtime:\(rawIdentifier)"
+    }
+
+    private func applications(
+        in spaceID: NSNumber,
         connection: Int32,
         symbols: SkyLightSymbols
-    ) -> NSRunningApplication? {
+    ) -> [NSRunningApplication] {
         guard let copyWindowsWithOptionsAndTags = symbols.copyWindowsWithOptionsAndTags else {
-            return nil
+            return []
         }
-        var setTags = [UInt64](repeating: 0, count: 2)
-        var clearTags = [UInt64](repeating: 0, count: 2)
-        let windowIDs: [NSNumber]? = setTags.withUnsafeMutableBufferPointer { setBuffer in
-            clearTags.withUnsafeMutableBufferPointer { clearBuffer in
-                copyWindowsWithOptionsAndTags(
-                    connection,
-                    0,
-                    [spaceID] as CFArray,
-                    0x2,
-                    setBuffer.baseAddress,
-                    clearBuffer.baseAddress
-                )?.takeRetainedValue() as? [NSNumber]
-            }
-        }
+        var setTags: UInt64 = 0
+        var clearTags: UInt64 = 0x4000000000
+        let windowIDs = copyWindowsWithOptionsAndTags(
+            connection,
+            0,
+            [spaceID] as CFArray,
+            0x2,
+            &setTags,
+            &clearTags
+        )?.takeRetainedValue() as? [NSNumber]
         guard let windowIDs, !windowIDs.isEmpty,
               let descriptions = CGWindowListCreateDescriptionFromArray(windowIDs as CFArray)
                 as? [[CFString: Any]] else {
-            return nil
+            return []
         }
 
-        return descriptions.lazy.compactMap { description -> NSRunningApplication? in
+        var result: [NSRunningApplication] = []
+        for application in descriptions.compactMap({ description -> NSRunningApplication? in
             guard (description[kCGWindowLayer] as? NSNumber)?.intValue == 0,
                   let pid = (description[kCGWindowOwnerPID] as? NSNumber)?.int32Value,
                   pid > 0 else { return nil }
             return eligibleApplication(NSRunningApplication(processIdentifier: pid))
-        }.first
+        }) {
+            let alreadyIncluded = result.contains { existing in
+                existing.processIdentifier == application.processIdentifier
+            }
+            if !alreadyIncluded {
+                result.append(application)
+            }
+        }
+        return result
+    }
+
+    private func uniqueApplicationNames(_ values: [String]) -> [String] {
+        var result: [String] = []
+        for value in values where !value.isEmpty && !result.contains(value) {
+            result.append(value)
+        }
+        return result
     }
 
     private func applicationFromMetadata(in value: Any) -> NSRunningApplication? {

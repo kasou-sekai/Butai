@@ -33,6 +33,9 @@ final class AppModel: ObservableObject {
     private let presetEngine: WindowPresetEngine
     private var saveTask: Task<Void, Never>?
     private var lastSystemSpaceSnapshot: SystemSpaceSnapshot?
+    /// Runtime-only pointer to the profile currently projected into
+    /// `configuration.workspaces` and `configuration.calibration`.
+    private var activeDisplayIdentifier: String?
 
     init(
         repository: ConfigurationRepository = .defaultRepository(),
@@ -50,7 +53,9 @@ final class AppModel: ObservableObject {
     var workspaces: [Workspace] { configuration.workspaces }
 
     var currentWorkspace: Workspace? {
-        guard !isCurrentSpaceFullscreen else { return nil }
+        guard spaceDetectionAvailable,
+              activeDisplayIdentifier != nil,
+              !isCurrentSpaceFullscreen else { return nil }
         guard let id = configuration.calibration.currentWorkspaceID else { return nil }
         return workspaces.first { $0.id == id }
     }
@@ -60,6 +65,15 @@ final class AppModel: ObservableObject {
     }
 
     var displayWorkspace: Workspace? { currentWorkspace ?? workspaces.first }
+
+    func applicationNames(for workspace: Workspace) -> [String]? {
+        guard let snapshot = lastSystemSpaceSnapshot,
+              snapshot.applicationInventoryAvailable,
+              snapshot.regularSpaces.indices.contains(workspace.order - 1) else {
+            return nil
+        }
+        return snapshot.regularSpaces[workspace.order - 1].applicationNames
+    }
 
     var overlaySpaces: [OverlaySpaceItem] {
         guard let snapshot = lastSystemSpaceSnapshot else {
@@ -128,6 +142,12 @@ final class AppModel: ObservableObject {
     private static let setupCompletionKey = "ButaiInitialSetupCompleteV2"
 
     func load() async {
+        // A provider snapshot may arrive while the asynchronous load is in
+        // flight. Force the first post-load synchronization to select the
+        // loaded display profile instead of treating the old snapshot as
+        // already synchronized.
+        activeDisplayIdentifier = nil
+        lastSystemSpaceSnapshot = nil
         do {
             if let saved = try await repository.load() {
                 configuration = saved
@@ -345,6 +365,7 @@ final class AppModel: ObservableObject {
     }
 
     func spaceDidChange() {
+        guard isLoaded else { return }
         _ = synchronizeWithSystemSpaces()
         // Keep the overlay ordered out until the navigator has also repaired
         // the destination Space's front-application/menu-bar state. navigate
@@ -353,10 +374,12 @@ final class AppModel: ObservableObject {
     }
 
     func refreshSystemSpaceTopology() {
+        guard isLoaded else { return }
         _ = synchronizeWithSystemSpaces()
     }
 
     func displayEnvironmentDidChange() {
+        guard isLoaded else { return }
         if synchronizeWithSystemSpaces() == nil {
             transientMessage = "显示器或桌面环境已改变，但暂时无法读取新的 Space 拓扑。"
         } else {
@@ -371,17 +394,6 @@ final class AppModel: ObservableObject {
 
     func setFullscreenOverlayMode(_ mode: AppSettings.FullscreenOverlayMode) {
         configuration.settings.fullscreenOverlayMode = mode
-        persist()
-    }
-
-    func setOverlayOffsets(horizontal: Double, vertical: Double) {
-        configuration.settings.overlayHorizontalOffset = min(max(horizontal, -10_000), 10_000)
-        configuration.settings.overlayVerticalOffset = min(max(vertical, -10_000), 10_000)
-        persist()
-    }
-
-    func setOverlayHorizontalOffset(_ offset: Double) {
-        configuration.settings.overlayHorizontalOffset = min(max(offset, -10_000), 10_000)
         persist()
     }
 
@@ -401,7 +413,7 @@ final class AppModel: ObservableObject {
     }
 
     func resetOverlayPosition() {
-        setOverlayOffsets(horizontal: 0, vertical: 0)
+        setOverlayVerticalOffset(0)
     }
 
     func captureCurrentWindowsAsPreset() async {
@@ -599,11 +611,32 @@ final class AppModel: ObservableObject {
     @discardableResult
     private func migrateLegacyPresetItems() -> Bool {
         let chatGPTApplication = preferredChatGPTApplication()
+        var changed = migrateLegacyPresetItems(
+            in: &configuration.workspaces,
+            chatGPTApplication: chatGPTApplication
+        )
+        for profileIndex in configuration.displayProfiles.indices {
+            var profile = configuration.displayProfiles[profileIndex]
+            if migrateLegacyPresetItems(
+                in: &profile.workspaces,
+                chatGPTApplication: chatGPTApplication
+            ) {
+                configuration.displayProfiles[profileIndex] = profile
+                changed = true
+            }
+        }
+        return changed
+    }
+
+    private func migrateLegacyPresetItems(
+        in workspaces: inout [Workspace],
+        chatGPTApplication: (bundleIdentifier: String, url: URL)?
+    ) -> Bool {
         var changed = false
-        for workspaceIndex in configuration.workspaces.indices {
-            for presetIndex in configuration.workspaces[workspaceIndex].presets.indices {
-                for itemIndex in configuration.workspaces[workspaceIndex].presets[presetIndex].items.indices {
-                    var item = configuration.workspaces[workspaceIndex].presets[presetIndex].items[itemIndex]
+        for workspaceIndex in workspaces.indices {
+            for presetIndex in workspaces[workspaceIndex].presets.indices {
+                for itemIndex in workspaces[workspaceIndex].presets[presetIndex].items.indices {
+                    var item = workspaces[workspaceIndex].presets[presetIndex].items[itemIndex]
                     var itemChanged = false
                     if item.kind == .chatGPTWindow, let application = chatGPTApplication,
                        (item.applicationBundleIdentifier != application.bundleIdentifier ||
@@ -622,7 +655,7 @@ final class AppModel: ObservableObject {
                         itemChanged = true
                     }
                     if itemChanged {
-                        configuration.workspaces[workspaceIndex].presets[presetIndex].items[itemIndex] = item
+                        workspaces[workspaceIndex].presets[presetIndex].items[itemIndex] = item
                         changed = true
                     }
                 }
@@ -716,6 +749,7 @@ final class AppModel: ObservableObject {
     private func synchronizeWithSystemSpaces() -> Int? {
         guard let snapshot = spaceProvider.snapshot() else {
             lastSystemSpaceSnapshot = nil
+            activeDisplayIdentifier = nil
             spaceDetectionAvailable = false
             detectedSystemSpaceCount = nil
             isCurrentSpaceFullscreen = false
@@ -736,7 +770,14 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.set(true, forKey: Self.setupCompletionKey)
 
         let supportedCount = min(max(actualCount, 1), 9)
-        var changed = false
+        var changed = configuration.schemaVersion != 2
+        configuration.schemaVersion = 2
+        if activateDisplayProfile(
+            displayIdentifier: snapshot.displayID,
+            workspaceCount: supportedCount
+        ) {
+            changed = true
+        }
         if configuration.workspaces.count != supportedCount {
             resizeWorkspaces(to: supportedCount)
             changed = true
@@ -765,6 +806,15 @@ final class AppModel: ObservableObject {
     }
 
     private func resizeWorkspaces(to count: Int) {
+        if let activeDisplayIdentifier,
+           let profileIndex = configuration.displayProfiles.firstIndex(
+               where: { $0.displayIdentifier == activeDisplayIdentifier }
+           ) {
+            configuration.workspaces = configuration.displayProfiles[profileIndex]
+                .visibleWorkspaces(count: count)
+            return
+        }
+
         if count > configuration.workspaces.count {
             for order in (configuration.workspaces.count + 1)...count {
                 configuration.workspaces.append(Workspace(order: order, name: "工作区 \(order)"))
@@ -775,6 +825,71 @@ final class AppModel: ObservableObject {
         configuration.normalizeWorkspaceOrder()
     }
 
+    /// Switches the active projection to a display-specific profile. A new
+    /// display always receives fresh default names; it never clones the
+    /// currently active display's names or presets.
+    private func activateDisplayProfile(
+        displayIdentifier: String,
+        workspaceCount: Int
+    ) -> Bool {
+        guard !displayIdentifier.isEmpty else { return false }
+        guard activeDisplayIdentifier != displayIdentifier else { return false }
+
+        saveActiveDisplayProfile()
+
+        let profile: DisplayWorkspaceProfile
+        if let profileIndex = configuration.displayProfiles.firstIndex(
+            where: { $0.displayIdentifier == displayIdentifier }
+        ) {
+            profile = configuration.displayProfiles[profileIndex]
+        } else if configuration.displayProfiles.isEmpty {
+            // The old schema had one global workspace list. Use it only once
+            // to seed the first precisely identified display; subsequent new
+            // displays must start with their own profile.
+            profile = DisplayWorkspaceProfile(
+                displayIdentifier: displayIdentifier,
+                workspaces: configuration.workspaces,
+                calibration: configuration.calibration
+            )
+            configuration.displayProfiles.append(profile)
+        } else {
+            profile = DisplayWorkspaceProfile.new(
+                displayIdentifier: displayIdentifier,
+                workspaceCount: workspaceCount
+            )
+            configuration.displayProfiles.append(profile)
+        }
+
+        activeDisplayIdentifier = displayIdentifier
+        configuration.workspaces = profile.visibleWorkspaces(count: workspaceCount)
+        configuration.calibration = profile.calibration
+        return true
+    }
+
+    /// Copies the active projection into its display profile while preserving
+    /// workspaces beyond the current topology. This prevents a temporary
+    /// display disconnect or a different desktop count from deleting saved
+    /// names and presets.
+    private func saveActiveDisplayProfile() {
+        guard let activeDisplayIdentifier else { return }
+        if let profileIndex = configuration.displayProfiles.firstIndex(
+            where: { $0.displayIdentifier == activeDisplayIdentifier }
+        ) {
+            var profile = configuration.displayProfiles[profileIndex]
+            profile.updateVisibleWorkspaces(configuration.workspaces)
+            profile.calibration = configuration.calibration
+            configuration.displayProfiles[profileIndex] = profile
+        } else {
+            configuration.displayProfiles.append(
+                DisplayWorkspaceProfile(
+                    displayIdentifier: activeDisplayIdentifier,
+                    workspaces: configuration.workspaces,
+                    calibration: configuration.calibration
+                )
+            )
+        }
+    }
+
     private func systemSpaceID(for regularOrder: Int) -> Int? {
         guard let snapshot = lastSystemSpaceSnapshot,
               snapshot.regularSpaces.indices.contains(regularOrder - 1) else { return nil }
@@ -782,6 +897,7 @@ final class AppModel: ObservableObject {
     }
 
     private func persist() {
+        saveActiveDisplayProfile()
         let snapshot = configuration
         let previousSave = saveTask
         saveTask = Task {

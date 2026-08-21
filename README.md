@@ -6,6 +6,7 @@ Butai 是一个 macOS 原生 Spaces 增强工具。当前仓库包含可运行�
 
 - 自动读取当前显示器的普通桌面与全屏应用 Space、顺序和当前位置；
 - 工作区名称与 Mission Control 的普通桌面按顺序同步；
+- 工作区名称、预设和校准状态按显示器标识独立保存；显示器断开后再次连接会恢复原配置，不会套用其他显示器的名称；
 - 使用版本化 JSON 原子保存配置，并保留上一份自动备份；
 - 收到 Space 变化通知后重新读取 WindowServer 的真实状态；
 - 普通桌面使用系统目标快捷键切换；全屏 Space 先直达最近的普通桌面，再按实际位置使用 Control+方向键切换；
@@ -45,7 +46,7 @@ DEVELOPER_DIR=/Volumes/Data/Applications/Xcode-beta.app/Contents/Developer swift
 DEVELOPER_DIR=/Volumes/Data/Applications/Xcode-beta.app/Contents/Developer swift test
 ```
 
-测试覆盖工作区数量约束、含预设的配置/备份持久化、窗口布局边界、评分式窗口匹配、执行结果统计以及导航参数验证。
+测试覆盖工作区数量约束、含预设的配置/备份持久化、按显示器隔离的配置、窗口布局边界、评分式窗口匹配、执行结果统计以及导航参数验证。
 
 ## 打包测试应用
 
@@ -57,4 +58,4 @@ zsh scripts/package_app.sh
 
 ## 技术边界
 
-macOS 没有提供满足产品需求的公开 Spaces 查询和切换 API。经用户确认，Butai 通过运行时加载的私有 CGS/SkyLight 读取接口和未公开的 Dock 手势事件实现原生 Spaces 增强。这些实现通过协议隔离，可能随 macOS 更新而需要适配，也不适合 Mac App Store。首版仍只正式支持单显示器和普通 Spaces。
+macOS 没有提供满足产品需求的公开 Spaces 查询和切换 API。经用户确认，Butai 通过运行时加载的私有 CGS/SkyLight 读取接口和未公开的 Dock 手势事件实现原生 Spaces 增强。这些实现通过协议隔离，可能随 macOS 更新而需要适配，也不适合 Mac App Store。当前 Space 导航仍以活动菜单栏显示器为运行时上下文，但工作区名称、预设和校准状态已按显示器严格隔离保存；无法精确确认活动显示器时会保持未校准，不会猜测并覆盖其他显示器配置。

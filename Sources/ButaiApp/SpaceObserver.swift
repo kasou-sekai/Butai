@@ -15,7 +15,7 @@ final class SpaceObserver {
             .receive(on: RunLoop.main)
             .sink { _ in onSpaceChange() }
 
-        topologyCancellable = Timer.publish(every: 0.75, on: .main, in: .common)
+        topologyCancellable = Timer.publish(every: 30, on: .main, in: .common)
             .autoconnect()
             .sink { _ in onTopologyPoll() }
     }

@@ -5,17 +5,47 @@ public struct ButaiConfiguration: Codable, Equatable, Sendable {
     public var workspaces: [Workspace]
     public var settings: AppSettings
     public var calibration: CalibrationState
+    /// Workspace data is kept separately for every display. `workspaces` and
+    /// `calibration` remain the active-display projection for compatibility
+    /// with the current UI and command surface.
+    public var displayProfiles: [DisplayWorkspaceProfile]
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion
+        case workspaces
+        case settings
+        case calibration
+        case displayProfiles
+    }
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         workspaces: [Workspace],
         settings: AppSettings = .init(),
-        calibration: CalibrationState = .uncalibrated
+        calibration: CalibrationState = .uncalibrated,
+        displayProfiles: [DisplayWorkspaceProfile] = []
     ) {
         self.schemaVersion = schemaVersion
         self.workspaces = workspaces
         self.settings = settings
         self.calibration = calibration
+        self.displayProfiles = displayProfiles
+        normalizeWorkspaceOrder()
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decodeIfPresent(Int.self, forKey: .schemaVersion) ?? 1
+        workspaces = try container.decode([Workspace].self, forKey: .workspaces)
+        settings = try container.decodeIfPresent(AppSettings.self, forKey: .settings) ?? .init()
+        calibration = try container.decodeIfPresent(CalibrationState.self, forKey: .calibration)
+            ?? .uncalibrated
+        // This is intentionally optional so configurations written before
+        // display profiles existed migrate without losing their workspace data.
+        displayProfiles = try container.decodeIfPresent(
+            [DisplayWorkspaceProfile].self,
+            forKey: .displayProfiles
+        ) ?? []
         normalizeWorkspaceOrder()
     }
 
@@ -27,6 +57,81 @@ public struct ButaiConfiguration: Codable, Equatable, Sendable {
     }
 
     public mutating func normalizeWorkspaceOrder() {
+        workspaces = Array(workspaces.prefix(9))
+        for index in workspaces.indices {
+            workspaces[index].order = index + 1
+            workspaces[index].shortcutIndex = index + 1
+        }
+        for index in displayProfiles.indices {
+            displayProfiles[index].normalizeWorkspaceOrder()
+        }
+    }
+}
+
+/// Persisted workspace and calibration state for one physical display.
+///
+/// The display identifier is deliberately the profile key. A profile is never
+/// removed when a display disappears, so reconnecting that display restores
+/// its names and presets instead of inheriting another display's state.
+public struct DisplayWorkspaceProfile: Codable, Equatable, Identifiable, Sendable {
+    public var displayIdentifier: String
+    public var workspaces: [Workspace]
+    public var calibration: CalibrationState
+
+    public var id: String { displayIdentifier }
+
+    public init(
+        displayIdentifier: String,
+        workspaces: [Workspace],
+        calibration: CalibrationState = .uncalibrated
+    ) {
+        self.displayIdentifier = displayIdentifier
+        self.workspaces = workspaces
+        self.calibration = calibration
+        normalizeWorkspaceOrder()
+    }
+
+    public static func new(displayIdentifier: String, workspaceCount: Int) -> DisplayWorkspaceProfile {
+        let count = min(max(workspaceCount, 1), 9)
+        return DisplayWorkspaceProfile(
+            displayIdentifier: displayIdentifier,
+            workspaces: (1...count).map { Workspace(order: $0, name: "工作区 \($0)") }
+        )
+    }
+
+    /// Returns the workspaces visible in the current display topology while
+    /// retaining any extra saved workspaces for later reconnection.
+    public func visibleWorkspaces(count: Int) -> [Workspace] {
+        let clampedCount = min(max(count, 1), 9)
+        var visible = Array(workspaces.prefix(clampedCount))
+        if visible.count < clampedCount {
+            visible.append(contentsOf: ((visible.count + 1)...clampedCount).map {
+                Workspace(order: $0, name: "工作区 \($0)")
+            })
+        }
+        var result = visible
+        for index in result.indices {
+            result[index].order = index + 1
+            result[index].shortcutIndex = index + 1
+        }
+        return result
+    }
+
+    /// Merges the active projection back into this profile without deleting
+    /// saved workspaces that are temporarily absent from the display.
+    public mutating func updateVisibleWorkspaces(_ visibleWorkspaces: [Workspace]) {
+        var stored = workspaces
+        if stored.count < visibleWorkspaces.count {
+            stored.append(contentsOf: visibleWorkspaces.dropFirst(stored.count))
+        }
+        for index in visibleWorkspaces.indices {
+            stored[index] = visibleWorkspaces[index]
+        }
+        workspaces = Array(stored.prefix(9))
+        normalizeWorkspaceOrder()
+    }
+
+    fileprivate mutating func normalizeWorkspaceOrder() {
         workspaces = Array(workspaces.prefix(9))
         for index in workspaces.indices {
             workspaces[index].order = index + 1
@@ -221,7 +326,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     }
 
     public var overlayVisible: Bool
-    public var overlayHorizontalOffset: Double
+    public let overlayHorizontalOffset: Double
     public var overlayVerticalOffset: Double
     public var overlayWidth: Double?
     public var overlayHeight: Double?
@@ -229,6 +334,18 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var feedbackDuration: Double
     public var capsLockShortcutsEnabled: Bool
     public var switchingAction: SwitchingAction
+
+    private enum CodingKeys: String, CodingKey {
+        case overlayVisible
+        case overlayHorizontalOffset
+        case overlayVerticalOffset
+        case overlayWidth
+        case overlayHeight
+        case fullscreenOverlayMode
+        case feedbackDuration
+        case capsLockShortcutsEnabled
+        case switchingAction
+    }
 
     public init(
         overlayVisible: Bool = true,
@@ -242,7 +359,9 @@ public struct AppSettings: Codable, Equatable, Sendable {
         switchingAction: SwitchingAction = .nothing
     ) {
         self.overlayVisible = overlayVisible
-        self.overlayHorizontalOffset = overlayHorizontalOffset
+        // Horizontal positioning is intentionally fixed at the screen
+        // center. Keep the stored field for backward-compatible decoding.
+        self.overlayHorizontalOffset = 0
         self.overlayVerticalOffset = overlayVerticalOffset
         self.overlayWidth = overlayWidth
         self.overlayHeight = overlayHeight
@@ -250,6 +369,33 @@ public struct AppSettings: Codable, Equatable, Sendable {
         self.feedbackDuration = feedbackDuration
         self.capsLockShortcutsEnabled = capsLockShortcutsEnabled
         self.switchingAction = switchingAction
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        overlayVisible = try container.decodeIfPresent(Bool.self, forKey: .overlayVisible) ?? true
+        // Ignore historical values so an old configuration cannot move the
+        // overlay horizontally after an update.
+        overlayHorizontalOffset = 0
+        overlayVerticalOffset = try container.decodeIfPresent(
+            Double.self,
+            forKey: .overlayVerticalOffset
+        ) ?? 0
+        overlayWidth = try container.decodeIfPresent(Double.self, forKey: .overlayWidth)
+        overlayHeight = try container.decodeIfPresent(Double.self, forKey: .overlayHeight)
+        fullscreenOverlayMode = try container.decodeIfPresent(
+            FullscreenOverlayMode.self,
+            forKey: .fullscreenOverlayMode
+        ) ?? .always
+        feedbackDuration = try container.decodeIfPresent(Double.self, forKey: .feedbackDuration) ?? 0.9
+        capsLockShortcutsEnabled = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .capsLockShortcutsEnabled
+        ) ?? false
+        switchingAction = try container.decodeIfPresent(
+            SwitchingAction.self,
+            forKey: .switchingAction
+        ) ?? .nothing
     }
 }
 
