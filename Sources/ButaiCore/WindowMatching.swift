@@ -43,15 +43,20 @@ public enum WindowMatcher {
 
     public static func match(item: PresetItem, window: DiscoveredWindow) -> WindowMatch {
         var score = 0
-        let bundleMatched = item.applicationBundleIdentifier == nil ||
-            item.applicationBundleIdentifier == window.bundleIdentifier
+        let expectedBundleIdentifier = item.applicationBundleIdentifier
+            ?? item.matchRules.first(where: { $0.kind == .bundleIdentifier })?.value
+        // Never treat an unidentified application as an identity match. A
+        // title or URL alone is not safe enough to move another app's window.
+        let bundleMatched = expectedBundleIdentifier == window.bundleIdentifier
 
-        if item.applicationBundleIdentifier != nil {
+        if expectedBundleIdentifier != nil {
             score += bundleMatched ? 50 : -100
         }
 
         for rule in item.matchRules where ruleMatches(rule, window: window) {
-            score += max(rule.weight, 0)
+            // Persisted configuration is user-editable. Bound individual
+            // weights so malformed values cannot overflow Int and crash.
+            score += min(max(rule.weight, 0), 100)
         }
 
         let confidence: WindowMatch.Confidence
@@ -76,7 +81,7 @@ public enum WindowMatcher {
         case .titleSuffix:
             return window.title.hasSuffix(rule.value)
         case .titleRegex:
-            guard rule.value.count <= 512, window.title.count <= 4_096,
+            guard regexIsSafe(rule.value), window.title.count <= 512,
                   let expression = try? NSRegularExpression(pattern: rule.value) else { return false }
             let range = NSRange(window.title.startIndex..., in: window.title)
             return expression.firstMatch(in: window.title, range: range) != nil
@@ -89,6 +94,38 @@ public enum WindowMatcher {
         case .subrole:
             return window.subrole == rule.value
         }
+    }
+
+    /// Foundation regular expressions have no matching timeout. Keep a small,
+    /// conservative subset: repeated groups, backreferences and patterns with
+    /// many quantifiers are rejected to avoid catastrophic backtracking.
+    private static func regexIsSafe(_ pattern: String) -> Bool {
+        guard !pattern.isEmpty, pattern.count <= 128,
+              !pattern.contains("(?") else { return false }
+        var escaped = false
+        var quantifierCount = 0
+        var previous: Character?
+        for character in pattern {
+            if escaped {
+                if character.isNumber { return false }
+                escaped = false
+                previous = character
+                continue
+            }
+            if character == "\\" {
+                escaped = true
+                continue
+            }
+            if "*+?{".contains(character) {
+                quantifierCount += 1
+                if quantifierCount > 2 || previous == ")" ||
+                    previous.map({ "*+?}".contains($0) }) == true {
+                    return false
+                }
+            }
+            previous = character
+        }
+        return !escaped
     }
 
     private static func normalizedFilePath(_ value: String?) -> String? {

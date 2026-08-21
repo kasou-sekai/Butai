@@ -7,12 +7,26 @@ DEVELOPER_ROOT="${DEVELOPER_DIR:-/Volumes/Data/Applications/Xcode-beta.app/Conte
 SWIFT_EXEC="${DEVELOPER_ROOT}/Toolchains/XcodeDefault.xctoolchain/usr/bin/swift"
 SDK_PATH="$(DEVELOPER_DIR="${DEVELOPER_ROOT}" xcrun --sdk macosx --show-sdk-path)"
 SDK_VERSION="$(DEVELOPER_DIR="${DEVELOPER_ROOT}" xcrun --sdk macosx --show-sdk-version)"
-BUILD_ROOT="${BUTAI_BUILD_ROOT:-/private/tmp/ButaiReleaseBuild}"
+CLEAN_BUILD_ROOT=0
+if [[ -n "${BUTAI_BUILD_ROOT:-}" ]]; then
+    BUILD_ROOT="${BUTAI_BUILD_ROOT}"
+else
+    BUILD_ROOT="$(mktemp -d /private/tmp/ButaiReleaseBuild.XXXXXX)"
+    CLEAN_BUILD_ROOT=1
+fi
 DIST_DIR="${PROJECT_DIR}/dist"
 APP_PATH="${DIST_DIR}/Butai.app"
 APP_VERSION="$(plutil -extract CFBundleShortVersionString raw "${PROJECT_DIR}/Packaging/Info.plist")"
 ZIP_PATH="${DIST_DIR}/Butai-${APP_VERSION}-macOS.zip"
 ARCHIVE_DIR="${DIST_DIR}/archive"
+
+cleanup() {
+    if [[ "${CLEAN_BUILD_ROOT:-0}" == 1 &&
+          "${BUILD_ROOT}" == /private/tmp/ButaiReleaseBuild.* ]]; then
+        rm -rf -- "${BUILD_ROOT}"
+    fi
+}
+trap cleanup EXIT
 
 if [[ -e "${ZIP_PATH}" ]]; then
     print -u2 "Refusing to overwrite ${ZIP_PATH}."
@@ -23,6 +37,10 @@ if [[ -e "${APP_PATH}" ]]; then
     mkdir -p "${ARCHIVE_DIR}"
     EXISTING_VERSION="$(plutil -extract CFBundleShortVersionString raw "${APP_PATH}/Contents/Info.plist")"
     ARCHIVED_APP="${ARCHIVE_DIR}/Butai-${EXISTING_VERSION}.app"
+    if [[ -e "${ARCHIVED_APP}" ]]; then
+        EXISTING_BUILD="$(plutil -extract CFBundleVersion raw "${APP_PATH}/Contents/Info.plist")"
+        ARCHIVED_APP="${ARCHIVE_DIR}/Butai-${EXISTING_VERSION}-build${EXISTING_BUILD}.app"
+    fi
     if [[ -e "${ARCHIVED_APP}" ]]; then
         print -u2 "Refusing to overwrite ${ARCHIVED_APP}."
         exit 2

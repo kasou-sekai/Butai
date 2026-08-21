@@ -182,7 +182,8 @@ final class WindowPresetEngine {
             return outcome(item, .opened, "已发送打开请求")
         }
 
-        let deadline = Date().addingTimeInterval(min(max(item.timeoutSeconds, 1), 20))
+        let timeout = item.timeoutSeconds.isFinite ? min(max(item.timeoutSeconds, 1), 20) : 8
+        let deadline = Date().addingTimeInterval(timeout)
         repeat {
             try? await Task.sleep(for: .milliseconds(250))
             windows = discoverVisibleWindows()
@@ -282,7 +283,10 @@ final class WindowPresetEngine {
         case .command:
             throw OpenError.unsupported
         case .url:
-            guard let value = item.resourcePath, let url = URL(string: value) else {
+            guard let value = item.resourcePath,
+                  let url = URL(string: value),
+                  let scheme = url.scheme?.lowercased(),
+                  ["http", "https"].contains(scheme) else {
                 throw OpenError.missingResource
             }
             if let applicationURL = applicationURL(for: item) {
@@ -317,7 +321,12 @@ final class WindowPresetEngine {
 
     private func applicationURL(for item: PresetItem) -> URL? {
         if let path = item.applicationPath, FileManager.default.fileExists(atPath: path) {
-            return URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path)
+            if let actualIdentifier = Bundle(url: url)?.bundleIdentifier,
+               item.applicationBundleIdentifier == nil ||
+                item.applicationBundleIdentifier == actualIdentifier {
+                return url
+            }
         }
         if let identifier = item.applicationBundleIdentifier {
             return NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier)

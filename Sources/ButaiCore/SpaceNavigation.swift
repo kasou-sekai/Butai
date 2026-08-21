@@ -20,11 +20,6 @@ public extension SpaceNavigating {
     }
 }
 
-public enum SpaceChangeOrigin: Equatable, Sendable {
-    case requested(targetOrder: Int)
-    case external
-}
-
 public struct NavigationIntent: Equatable, Sendable {
     public var currentOrder: Int
     public var targetOrder: Int

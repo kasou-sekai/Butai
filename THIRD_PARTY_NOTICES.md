@@ -1,8 +1,9 @@
 # Third-Party Notices
 
-The native Spaces snapshot and switching backend was informed by the open-source
-WhichSpace project, including its documented CGS function declarations and Dock
-swipe event-field technique:
+The native Spaces snapshot backend was informed by the open-source WhichSpace
+project, including its documented CGS function declarations. Butai's current
+navigation implementation uses the symbolic Mission Control shortcuts configured
+by macOS and does not use WhichSpace's Dock swipe event technique:
 
 - Project: https://github.com/gechr/WhichSpace
 - Copyright (c) 2015 George Christou

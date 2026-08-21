@@ -57,10 +57,12 @@ public struct ButaiConfiguration: Codable, Equatable, Sendable {
     }
 
     public mutating func normalizeWorkspaceOrder() {
+        if workspaces.isEmpty {
+            workspaces = [Workspace(order: 1, name: "工作区 1")]
+        }
         workspaces = Array(workspaces.prefix(9))
         for index in workspaces.indices {
             workspaces[index].order = index + 1
-            workspaces[index].shortcutIndex = index + 1
         }
         for index in displayProfiles.indices {
             displayProfiles[index].normalizeWorkspaceOrder()
@@ -112,7 +114,6 @@ public struct DisplayWorkspaceProfile: Codable, Equatable, Identifiable, Sendabl
         var result = visible
         for index in result.indices {
             result[index].order = index + 1
-            result[index].shortcutIndex = index + 1
         }
         return result
     }
@@ -132,10 +133,12 @@ public struct DisplayWorkspaceProfile: Codable, Equatable, Identifiable, Sendabl
     }
 
     fileprivate mutating func normalizeWorkspaceOrder() {
+        if workspaces.isEmpty {
+            workspaces = [Workspace(order: 1, name: "工作区 1")]
+        }
         workspaces = Array(workspaces.prefix(9))
         for index in workspaces.indices {
             workspaces[index].order = index + 1
-            workspaces[index].shortcutIndex = index + 1
         }
     }
 }
@@ -146,7 +149,6 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
     public var name: String
     public var colorHex: String?
     public var symbol: String?
-    public var shortcutIndex: Int?
     public var presets: [Preset]
     public var createdAt: Date
     public var updatedAt: Date
@@ -157,7 +159,6 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         name: String,
         colorHex: String? = nil,
         symbol: String? = nil,
-        shortcutIndex: Int? = nil,
         presets: [Preset] = [],
         createdAt: Date = .now,
         updatedAt: Date = .now
@@ -167,7 +168,6 @@ public struct Workspace: Identifiable, Codable, Equatable, Sendable {
         self.name = name
         self.colorHex = colorHex
         self.symbol = symbol
-        self.shortcutIndex = shortcutIndex ?? order
         self.presets = presets
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -306,19 +306,20 @@ public struct WindowLayout: Codable, Equatable, Sendable {
 
     public func clamped(minimumFraction: Double = 0.08) -> WindowLayout {
         var copy = self
-        copy.normalizedWidth = min(max(normalizedWidth, minimumFraction), 1)
-        copy.normalizedHeight = min(max(normalizedHeight, minimumFraction), 1)
-        copy.normalizedX = min(max(normalizedX, 0), 1 - copy.normalizedWidth)
-        copy.normalizedY = min(max(normalizedY, 0), 1 - copy.normalizedHeight)
+        let safeMinimum = minimumFraction.isFinite ? min(max(minimumFraction, 0.01), 1) : 0.08
+        let safeWidth = normalizedWidth.isFinite ? normalizedWidth : 1
+        let safeHeight = normalizedHeight.isFinite ? normalizedHeight : 1
+        let safeX = normalizedX.isFinite ? normalizedX : 0
+        let safeY = normalizedY.isFinite ? normalizedY : 0
+        copy.normalizedWidth = min(max(safeWidth, safeMinimum), 1)
+        copy.normalizedHeight = min(max(safeHeight, safeMinimum), 1)
+        copy.normalizedX = min(max(safeX, 0), 1 - copy.normalizedWidth)
+        copy.normalizedY = min(max(safeY, 0), 1 - copy.normalizedHeight)
         return copy
     }
 }
 
 public struct AppSettings: Codable, Equatable, Sendable {
-    public enum SwitchingAction: String, Codable, Sendable {
-        case nothing, checkPreset, completePreset
-    }
-
     public enum FullscreenOverlayMode: String, Codable, Sendable, CaseIterable {
         case hidden
         case revealAtTop
@@ -326,57 +327,36 @@ public struct AppSettings: Codable, Equatable, Sendable {
     }
 
     public var overlayVisible: Bool
-    public let overlayHorizontalOffset: Double
     public var overlayVerticalOffset: Double
     public var overlayWidth: Double?
     public var overlayHeight: Double?
     public var fullscreenOverlayMode: FullscreenOverlayMode?
-    public var feedbackDuration: Double
-    public var capsLockShortcutsEnabled: Bool
-    public var switchingAction: SwitchingAction
 
     private enum CodingKeys: String, CodingKey {
         case overlayVisible
-        case overlayHorizontalOffset
         case overlayVerticalOffset
         case overlayWidth
         case overlayHeight
         case fullscreenOverlayMode
-        case feedbackDuration
-        case capsLockShortcutsEnabled
-        case switchingAction
     }
 
     public init(
         overlayVisible: Bool = true,
-        overlayHorizontalOffset: Double = 0,
         overlayVerticalOffset: Double = 0,
         overlayWidth: Double? = nil,
         overlayHeight: Double? = nil,
-        fullscreenOverlayMode: FullscreenOverlayMode? = .always,
-        feedbackDuration: Double = 0.9,
-        capsLockShortcutsEnabled: Bool = false,
-        switchingAction: SwitchingAction = .nothing
+        fullscreenOverlayMode: FullscreenOverlayMode? = .always
     ) {
         self.overlayVisible = overlayVisible
-        // Horizontal positioning is intentionally fixed at the screen
-        // center. Keep the stored field for backward-compatible decoding.
-        self.overlayHorizontalOffset = 0
         self.overlayVerticalOffset = overlayVerticalOffset
         self.overlayWidth = overlayWidth
         self.overlayHeight = overlayHeight
         self.fullscreenOverlayMode = fullscreenOverlayMode
-        self.feedbackDuration = feedbackDuration
-        self.capsLockShortcutsEnabled = capsLockShortcutsEnabled
-        self.switchingAction = switchingAction
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         overlayVisible = try container.decodeIfPresent(Bool.self, forKey: .overlayVisible) ?? true
-        // Ignore historical values so an old configuration cannot move the
-        // overlay horizontally after an update.
-        overlayHorizontalOffset = 0
         overlayVerticalOffset = try container.decodeIfPresent(
             Double.self,
             forKey: .overlayVerticalOffset
@@ -387,15 +367,6 @@ public struct AppSettings: Codable, Equatable, Sendable {
             FullscreenOverlayMode.self,
             forKey: .fullscreenOverlayMode
         ) ?? .always
-        feedbackDuration = try container.decodeIfPresent(Double.self, forKey: .feedbackDuration) ?? 0.9
-        capsLockShortcutsEnabled = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .capsLockShortcutsEnabled
-        ) ?? false
-        switchingAction = try container.decodeIfPresent(
-            SwitchingAction.self,
-            forKey: .switchingAction
-        ) ?? .nothing
     }
 }
 

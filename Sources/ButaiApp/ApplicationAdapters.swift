@@ -381,7 +381,13 @@ private final class ChatGPTAdapter: ApplicationAdapter {
 private enum AdapterApplications {
     static func url(for item: PresetItem, candidates: [String]) -> URL? {
         if let path = item.applicationPath, FileManager.default.fileExists(atPath: path) {
-            return URL(fileURLWithPath: path)
+            let url = URL(fileURLWithPath: path)
+            if let identifier = Bundle(url: url)?.bundleIdentifier,
+               candidates.contains(identifier),
+               item.applicationBundleIdentifier == nil ||
+                item.applicationBundleIdentifier == identifier {
+                return url
+            }
         }
         if let identifier = item.applicationBundleIdentifier,
            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: identifier) {
@@ -431,7 +437,8 @@ private enum ProcessRunner {
             box.process.standardError = errorPipe
             try box.process.run()
 
-            let deadline = Date().addingTimeInterval(max(timeoutSeconds, 0.1))
+            let timeout = timeoutSeconds.isFinite ? max(timeoutSeconds, 0.1) : 15
+            let deadline = Date().addingTimeInterval(timeout)
             while box.process.isRunning, Date() < deadline, !Task.isCancelled {
                 try? await Task.sleep(for: .milliseconds(25))
             }

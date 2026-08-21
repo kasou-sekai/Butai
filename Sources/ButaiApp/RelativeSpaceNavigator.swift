@@ -6,9 +6,8 @@ import Darwin
 import Foundation
 
 /// Switches directly through macOS's configured "Switch to Desktop N"
-/// symbolic actions. This is the navigation path used by Butai 0.5.17:
-/// one target action is posted, with no adjacent-Space loop and no Dock or
-/// Mission Control automation.
+/// symbolic actions. For a regular desktop, one target action is posted with
+/// no adjacent-Space loop and no Dock or Mission Control UI automation.
 actor PrivateSpaceNavigator: SpaceNavigating {
     private static let mouseReleasePollCount = 60
     private static let transitionPollCount = 40

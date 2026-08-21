@@ -32,6 +32,7 @@ final class AppModel: ObservableObject {
     private let spaceProvider: any SystemSpaceProviding
     private let presetEngine: WindowPresetEngine
     private var saveTask: Task<Void, Never>?
+    private var persistenceAvailable = true
     private var lastSystemSpaceSnapshot: SystemSpaceSnapshot?
     /// Runtime-only pointer to the profile currently projected into
     /// `configuration.workspaces` and `configuration.calibration`.
@@ -156,7 +157,8 @@ final class AppModel: ObservableObject {
                 }
             }
         } catch {
-            transientMessage = "配置读取失败，已安全启动为空配置：\(error.localizedDescription)"
+            persistenceAvailable = false
+            transientMessage = "配置读取失败，已进入只读恢复模式且不会覆盖原文件：\(error.localizedDescription)"
         }
         if synchronizeWithSystemSpaces() == nil {
             needsInitialSetup = !UserDefaults.standard.bool(forKey: Self.setupCompletionKey)
@@ -524,7 +526,9 @@ final class AppModel: ObservableObject {
 
     func addPresetURL(workspaceID: UUID, value: String) {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: trimmed), let scheme = url.scheme, ["http", "https"].contains(scheme) else {
+        guard let url = URL(string: trimmed),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme) else {
             transientMessage = "请输入有效的 http 或 https URL。"
             return
         }
@@ -538,10 +542,10 @@ final class AppModel: ObservableObject {
         }
         let workspace = configuration.workspaces[workspaceIndex]
         configuration.workspaces[workspaceIndex].presets = [
-            Preset(workspaceID: workspace.id, name: "(workspace.name)预设")
+            Preset(workspaceID: workspace.id, name: "\(workspace.name)预设")
         ]
         configuration.workspaces[workspaceIndex].updatedAt = .now
-        transientMessage = "已为 (workspace.name) 新建空白预设。"
+        transientMessage = "已为 \(workspace.name) 新建空白预设。"
         persist()
     }
 
@@ -553,7 +557,7 @@ final class AppModel: ObservableObject {
         configuration.workspaces[workspaceIndex].presets.removeAll()
         configuration.workspaces[workspaceIndex].updatedAt = .now
         lastPresetReport = nil
-        transientMessage = "已删除 (configuration.workspaces[workspaceIndex].name) 的预设。"
+        transientMessage = "已删除 \(configuration.workspaces[workspaceIndex].name) 的预设。"
         persist()
     }
 
@@ -897,6 +901,10 @@ final class AppModel: ObservableObject {
     }
 
     private func persist() {
+        guard persistenceAvailable else {
+            transientMessage = "配置处于只读恢复模式；原文件未被覆盖。请先备份或修复配置后重启 Butai。"
+            return
+        }
         saveActiveDisplayProfile()
         let snapshot = configuration
         let previousSave = saveTask

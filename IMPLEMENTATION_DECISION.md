@@ -2,6 +2,8 @@
 
 日期：2026-08-11
 
+> 2026-08-21 更新：读取拓扑的 CGS/SkyLight 决策仍然有效。导航部分已经被后续实现取代：当前版本发送用户在 macOS 中配置的 Mission Control 符号快捷键，不再合成 Dock 滑动手势。
+
 ## 决策
 
 Butai 采用隔离的私有 CGS/SkyLight 运行时后端，用于：
@@ -9,7 +11,7 @@ Butai 采用隔离的私有 CGS/SkyLight 运行时后端，用于：
 - 读取当前显示器的 Space 拓扑；
 - 区分普通桌面与全屏 Space；
 - 确认当前 Space；
-- 通过合成 Dock 滑动手势切换 Space。
+- 通过隔离的导航协议切换 Space（最初采用 Dock 滑动手势，现已改用系统符号快捷键）。
 
 ## 原因
 

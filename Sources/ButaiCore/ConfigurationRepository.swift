@@ -36,6 +36,12 @@ public actor ConfigurationRepository {
         guard fileManager.fileExists(atPath: configurationURL.path) else { return nil }
         do {
             return try decode(configurationURL)
+        } catch let error as RepositoryError {
+            // A newer schema must never be silently replaced by an older
+            // backup. Let the caller enter read-only recovery mode instead.
+            if case .unsupportedSchema = error { throw error }
+            guard fileManager.fileExists(atPath: backupURL.path) else { throw error }
+            return try decode(backupURL)
         } catch {
             guard fileManager.fileExists(atPath: backupURL.path) else { throw error }
             return try decode(backupURL)

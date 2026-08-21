@@ -431,9 +431,10 @@ final class OverlayController: NSObject, NSWindowDelegate {
         guard let screen = panel.screen ?? NSScreen.main ?? NSScreen.screens.first else { return nil }
         let size = preferredPopupSize()
         let desiredX = panel.frame.midX - size.width / 2
+        let desiredY = panel.frame.minY - Self.popupSpacing - size.height
         let origin = NSPoint(
             x: min(max(desiredX, screen.frame.minX), screen.frame.maxX - size.width),
-            y: panel.frame.minY - Self.popupSpacing - size.height
+            y: min(max(desiredY, screen.frame.minY), screen.frame.maxY - size.height)
         )
         return NSRect(origin: origin, size: size)
     }
@@ -497,41 +498,43 @@ private struct OverlayPopupView: View {
     let onWorkspaceSelected: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            ForEach(model.overlaySpaces) { item in
-                Button {
-                    guard !item.isCurrent else { return }
-                    onWorkspaceSelected()
-                    Task { await model.navigate(to: item) }
-                } label: {
-                    HStack(spacing: 5) {
-                        if item.isCurrent {
-                            Image(systemName: "location.fill")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundStyle(Color.accentColor)
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.overlaySpaces) { item in
+                    Button {
+                        guard !item.isCurrent else { return }
+                        onWorkspaceSelected()
+                        Task { await model.navigate(to: item) }
+                    } label: {
+                        HStack(spacing: 5) {
+                            if item.isCurrent {
+                                Image(systemName: "location.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                            }
+                            if let workspace = item.workspace {
+                                Text(workspace.name)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            } else {
+                                Text(item.applicationName ?? "全屏应用")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .lineLimit(1)
+                                    .fixedSize(horizontal: true, vertical: false)
+                            }
                         }
-                        if let workspace = item.workspace {
-                            Text(workspace.name)
-                                .font(.system(size: 13, weight: .medium))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        } else {
-                            Text(item.applicationName ?? "全屏应用")
-                                .font(.system(size: 13, weight: .medium))
-                                .lineLimit(1)
-                                .fixedSize(horizontal: true, vertical: false)
-                        }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .contentShape(Rectangle())
+                            .background(
+                                item.isCurrent ? Color.accentColor.opacity(0.2) : .white.opacity(0.1),
+                                in: RoundedRectangle(cornerRadius: 7)
+                            )
                     }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .contentShape(Rectangle())
-                        .background(
-                            item.isCurrent ? Color.accentColor.opacity(0.2) : .white.opacity(0.1),
-                            in: RoundedRectangle(cornerRadius: 7)
-                        )
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(accessibilityLabel(for: item))
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(accessibilityLabel(for: item))
             }
         }
         .padding(.horizontal, 4)

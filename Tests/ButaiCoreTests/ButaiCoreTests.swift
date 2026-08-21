@@ -14,20 +14,30 @@ struct ButaiCoreTests {
         #expect(excessive.workspaces.map(\.order) == Array(1...9))
     }
 
-    @Test("Overlay horizontal offset is always fixed at zero")
-    func overlayHorizontalOffsetIsFixed() throws {
-        let settings = AppSettings(overlayHorizontalOffset: 240, overlayVerticalOffset: 18)
-        #expect(settings.overlayHorizontalOffset == 0)
-
-        let data = try JSONEncoder().encode(settings)
-        let decoded = try JSONDecoder().decode(AppSettings.self, from: data)
-        #expect(decoded.overlayHorizontalOffset == 0)
-
+    @Test("Historical unused settings are discarded")
+    func historicalUnusedSettingsAreDiscarded() throws {
         let historicalData = Data(
-            #"{"overlayHorizontalOffset":240,"overlayVerticalOffset":18}"#.utf8
+            #"{"overlayHorizontalOffset":240,"overlayVerticalOffset":18,"feedbackDuration":9,"capsLockShortcutsEnabled":true,"switchingAction":"completePreset"}"#.utf8
         )
         let historicalDecoded = try JSONDecoder().decode(AppSettings.self, from: historicalData)
-        #expect(historicalDecoded.overlayHorizontalOffset == 0)
+        let reencoded = try JSONEncoder().encode(historicalDecoded)
+        let object = try #require(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
+
+        #expect(historicalDecoded.overlayVerticalOffset == 18)
+        #expect(object["overlayHorizontalOffset"] == nil)
+        #expect(object["feedbackDuration"] == nil)
+        #expect(object["capsLockShortcutsEnabled"] == nil)
+        #expect(object["switchingAction"] == nil)
+    }
+
+    @Test("Empty decoded workspace lists recover to a usable default")
+    func emptyWorkspaceListRecovers() {
+        let configuration = ButaiConfiguration(workspaces: [])
+        let profile = DisplayWorkspaceProfile(displayIdentifier: "display-A", workspaces: [])
+
+        #expect(configuration.workspaces.count == 1)
+        #expect(configuration.workspaces[0].order == 1)
+        #expect(profile.workspaces.count == 1)
     }
 
     @Test("Configuration round trips and writes a backup")
@@ -91,6 +101,29 @@ struct ButaiCoreTests {
         #expect(directoryMode?.intValue == 0o700)
         #expect(configurationMode?.intValue == 0o600)
         #expect(backupMode?.intValue == 0o600)
+    }
+
+    @Test("A newer primary schema is never silently downgraded to its backup")
+    func newerSchemaDoesNotFallBack() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("configuration.json")
+        let repository = ConfigurationRepository(configurationURL: url)
+        try await repository.save(.initial(workspaceCount: 2))
+
+        var future = ButaiConfiguration.initial(workspaceCount: 3)
+        future.schemaVersion = 99
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .secondsSince1970
+        try encoder.encode(future).write(to: url, options: .atomic)
+
+        do {
+            _ = try await repository.load()
+            Issue.record("Expected the unsupported primary schema to be rejected")
+        } catch let error as ConfigurationRepository.RepositoryError {
+            #expect(error == .unsupportedSchema(99))
+        }
     }
 
     @Test("Display profiles isolate names and retain hidden workspaces")
@@ -290,10 +323,54 @@ struct ButaiCoreTests {
             displayName: "App",
             matchRules: [WindowMatchRule(kind: .titleRegex, value: String(repeating: "a", count: 513), weight: 45)]
         )
+        let catastrophic = PresetItem(
+            kind: .application,
+            applicationBundleIdentifier: "com.example.App",
+            displayName: "App",
+            matchRules: [WindowMatchRule(kind: .titleRegex, value: "^(a+)+$", weight: 45)]
+        )
         let window = DiscoveredWindow(bundleIdentifier: "com.example.App", title: "aaaa")
 
         #expect(!WindowMatcher.isAcceptable(item: invalid, match: WindowMatcher.match(item: invalid, window: window)))
         #expect(!WindowMatcher.isAcceptable(item: oversized, match: WindowMatcher.match(item: oversized, window: window)))
+        #expect(!WindowMatcher.isAcceptable(item: catastrophic, match: WindowMatcher.match(item: catastrophic, window: window)))
+    }
+
+    @Test("Window matching requires an application identity and bounds rule weights")
+    func matchingIdentityAndWeightBounds() {
+        let unidentified = PresetItem(
+            kind: .application,
+            displayName: "Untargeted",
+            matchRules: [WindowMatchRule(kind: .titleExact, value: "Document", weight: Int.max)]
+        )
+        let identified = PresetItem(
+            kind: .application,
+            applicationBundleIdentifier: "com.example.Editor",
+            displayName: "Editor",
+            matchRules: [WindowMatchRule(kind: .titleExact, value: "Document", weight: Int.max)]
+        )
+        let window = DiscoveredWindow(bundleIdentifier: "com.example.Editor", title: "Document")
+
+        #expect(!WindowMatcher.isAcceptable(
+            item: unidentified,
+            match: WindowMatcher.match(item: unidentified, window: window)
+        ))
+        #expect(WindowMatcher.match(item: identified, window: window).score == 150)
+    }
+
+    @Test("Layout clamping rejects non-finite geometry")
+    func nonFiniteLayoutClamping() {
+        let layout = WindowLayout(
+            normalizedX: .nan,
+            normalizedY: .infinity,
+            normalizedWidth: -.infinity,
+            normalizedHeight: .nan
+        ).clamped()
+
+        #expect(layout.normalizedX == 0)
+        #expect(layout.normalizedY == 0)
+        #expect(layout.normalizedWidth == 1)
+        #expect(layout.normalizedHeight == 1)
     }
 
     @Test("Navigation intent validates bounds")
